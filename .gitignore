@@ -1,0 +1,28 @@
+# Personal data — never commit a real resume to a public repo.
+resumes/*
+!resumes/.gitkeep
+!resumes/README.md
+reports/*
+!reports/.gitkeep
+
+# Job descriptions may be under a recruiter's copyright and are noise in git.
+jd/*
+!jd/.gitkeep
+*.jd.txt
+
+# Build output
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
