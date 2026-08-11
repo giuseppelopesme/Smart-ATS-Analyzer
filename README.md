@@ -130,8 +130,13 @@ MCP_TRANSPORT=http MCP_PATH=/mcp/<secret> python3 server/ats_mcp.py
 ```
 
 Three tools: `ats_validate_deliverables`, `ats_check_resume`,
-`ats_extract_text`. Documents are passed as base64 or as a public HTTPS URL the
-server fetches; nothing is stored and nothing is logged.
+`ats_extract_text`. A document reaches it as a one-time upload id, a public
+HTTPS URL, or base64. Nothing is written to disk and nothing is logged.
+
+An upload page at `<MCP_PATH>/upload` is what makes **iPhone, iPad, Mac and web
+all work the same way**: pick the file (the picker reads iCloud Drive natively),
+get a single-use id, paste it to Claude. Staged files live in RAM, are consumed
+on use and expire after 30 minutes.
 
 Two constraints the guide covers rather than papers over: **claude.ai custom
 connectors support OAuth only** — there is no field for an API key, so access
@@ -173,11 +178,12 @@ fails to compile, or anything imports a third-party module.
     ats-parseability.md      why each parseability check exists
     aliases.json             synonym table
 tests/test_ats.py       107 tests, no sample files on disk
-tests/test_server.py    39 tests for the MCP core, no SDK required
+tests/test_server.py    55 tests for the MCP core, no SDK required
 server/
   ats_mcp.py            MCP server (Streamable HTTP or stdio)
   core.py               bytes -> report, transport-agnostic
   fetching.py           URL fetch with SSRF guards
+  uploads.py            single-use in-memory staging + upload page
   deploy/               systemd unit, Caddyfile, Dockerfile
 tools/package_skill.py  build + validate the uploadable zip
 ```
@@ -200,7 +206,7 @@ are built on that.
 
 ```bash
 python3 tests/test_ats.py     # 107 passed, 0 failed
-python3 tests/test_server.py  #  39 passed, 0 failed
+python3 tests/test_server.py  #  55 passed, 0 failed
 ```
 
 Every PDF and DOCX is constructed byte by byte in `tests/fixtures.py` and

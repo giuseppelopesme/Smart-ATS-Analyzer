@@ -5,7 +5,12 @@ ats.example.com {
 
     # Only the secret MCP path is routed. Everything else 404s, so the
     # endpoint is not discoverable by probing the domain.
+    # Covers both the MCP endpoint and the /upload page beneath it.
     handle /mcp/* {
+        # Enough for a 12 MB document as multipart or base64, and no more.
+        request_body {
+            max_size 20MB
+        }
         reverse_proxy 127.0.0.1:8080 {
             # Streamable HTTP can hold a response open; do not cut it short.
             flush_interval -1

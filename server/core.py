@@ -33,6 +33,7 @@ from docx_inspect import DocxError  # noqa: E402
 from readers import UnsupportedFormat, load_any  # noqa: E402
 
 from fetching import FetchError, fetch_document, guess_filename  # noqa: E402
+from uploads import UploadError, UploadStore  # noqa: E402
 
 __all__ = ["validate_deliverables", "check_resume", "extract_text",
            "InputTooLarge", "BadUpload", "MAX_FILE_BYTES", "MAX_JD_CHARS"]
@@ -42,6 +43,15 @@ MAX_FILE_BYTES = 12 * 1024 * 1024
 MAX_JD_CHARS = 60_000
 
 ALLOWED_SUFFIXES = {".pdf", ".docx", ".doc", ".rtf", ".txt", ".md", ".markdown", ".html", ".htm"}
+
+# Staging for devices that cannot produce base64 and have no public URL to
+# offer -- an iPad, most obviously. Set by the server at start-up.
+UPLOADS: Optional[UploadStore] = None
+
+
+def set_upload_store(store: Optional[UploadStore]) -> None:
+    global UPLOADS
+    UPLOADS = store
 
 
 class InputTooLarge(ValueError):
@@ -87,23 +97,43 @@ def _decode(content_b64: str, label: str) -> bytes:
 
 
 def _obtain(content_b64: Optional[str], url: Optional[str], label: str,
-            default_name: str) -> tuple:
-    """Get bytes from base64 or a URL. Returns (content, filename_hint).
+            default_name: str, upload_id: Optional[str] = None) -> tuple:
+    """Get bytes from base64, a URL, or a staged upload id.
 
-    Exactly one source must be given: silently preferring one over the other
-    would make a caller that supplied both think it validated the wrong file.
+    Exactly one source must be given: silently preferring one over another
+    would leave a caller who supplied two unsure which file was checked.
     """
-    has_b64 = bool(content_b64 and content_b64.strip())
-    has_url = bool(url and url.strip())
-    if has_b64 and has_url:
+    sources = {
+        f"{label}_base64": bool(content_b64 and content_b64.strip()),
+        f"{label}_url": bool(url and url.strip()),
+        "upload_id": bool(upload_id and upload_id.strip()),
+    }
+    given = [name for name, present in sources.items() if present]
+    if len(given) > 1:
         raise BadUpload(
-            f"give either {label}_base64 or {label}_url, not both — "
-            f"otherwise which one was checked is ambiguous"
+            f"give exactly one source for the {label} — got {', '.join(given)}. "
+            f"Otherwise which one was checked is ambiguous."
         )
-    if not has_b64 and not has_url:
-        raise BadUpload(f"no {label} supplied: pass {label}_base64 or {label}_url")
-    if has_b64:
+    if not given:
+        raise BadUpload(
+            f"no {label} supplied: pass {label}_base64, {label}_url or upload_id"
+        )
+
+    if sources[f"{label}_base64"]:
         return _decode(content_b64, label), default_name
+
+    if sources["upload_id"]:
+        if UPLOADS is None:
+            raise BadUpload(
+                "this server has no upload staging enabled, so upload_id cannot "
+                f"be used. Pass {label}_base64 or {label}_url instead."
+            )
+        try:
+            content, name = UPLOADS.take(upload_id)
+        except UploadError as exc:
+            raise BadUpload(str(exc)) from exc
+        return content, name or default_name
+
     try:
         content, final_url = fetch_document(url.strip(), MAX_FILE_BYTES)
     except FetchError as exc:
@@ -125,13 +155,17 @@ def validate_deliverables(
     jd_text: Optional[str] = None,
     docx_url: Optional[str] = None,
     pdf_url: Optional[str] = None,
+    docx_upload_id: Optional[str] = None,
+    pdf_upload_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the canonical-structure gate over an ATS docx (+ PDF)."""
-    docx_bytes, docx_hint = _obtain(docx_b64, docx_url, "docx", docx_filename)
+    docx_bytes, docx_hint = _obtain(docx_b64, docx_url, "docx", docx_filename,
+                                    docx_upload_id)
     docx_filename = docx_hint or docx_filename
     pdf_bytes = None
-    if pdf_b64 or pdf_url:
-        pdf_bytes, pdf_hint = _obtain(pdf_b64, pdf_url, "pdf", pdf_filename)
+    if pdf_b64 or pdf_url or pdf_upload_id:
+        pdf_bytes, pdf_hint = _obtain(pdf_b64, pdf_url, "pdf", pdf_filename,
+                                      pdf_upload_id)
         pdf_filename = pdf_hint or pdf_filename
 
     with tempfile.TemporaryDirectory(prefix="ats-") as tmp:
@@ -168,9 +202,10 @@ def check_resume(
     filename: str = "resume.pdf",
     jd_text: Optional[str] = None,
     content_url: Optional[str] = None,
+    upload_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Parseability and job-description review for any resume."""
-    raw, hint = _obtain(content_b64, content_url, "resume", filename)
+    raw, hint = _obtain(content_b64, content_url, "resume", filename, upload_id)
     filename = hint or filename
     with tempfile.TemporaryDirectory(prefix="ats-") as tmp:
         path = os.path.join(tmp, f"upload{_suffix_of(filename, '.pdf')}")
@@ -191,9 +226,10 @@ def extract_text(
     filename: str = "resume.pdf",
     stream_order: bool = False,
     content_url: Optional[str] = None,
+    upload_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return exactly what an ATS extracts, in either reading order."""
-    raw, hint = _obtain(content_b64, content_url, "document", filename)
+    raw, hint = _obtain(content_b64, content_url, "document", filename, upload_id)
     filename = hint or filename
     with tempfile.TemporaryDirectory(prefix="ats-") as tmp:
         path = os.path.join(tmp, f"upload{_suffix_of(filename, '.pdf')}")

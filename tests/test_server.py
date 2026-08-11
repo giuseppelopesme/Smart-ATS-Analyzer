@@ -24,6 +24,7 @@ import core  # noqa: E402
 import docx_fixtures as DF  # noqa: E402
 import fetching  # noqa: E402
 import fixtures as PF  # noqa: E402
+import uploads  # noqa: E402
 
 PASS = FAIL = 0
 FAILURES: list = []
@@ -140,7 +141,7 @@ def test_upload_guards(tmp: str) -> None:
         core.check_resume(content_b64="aGk=", content_url="https://example.com/a.pdf")
         check("both sources rejected", False, "no exception")
     except core.BadUpload as exc:
-        check("both sources rejected", "not both" in str(exc), str(exc)[:60])
+        check("both sources rejected", "exactly one" in str(exc), str(exc)[:60])
 
     try:
         core.check_resume()
@@ -232,11 +233,118 @@ def test_no_residue(tmp: str) -> None:
     check("no temp directory survives the call", not leaked, str(leaked))
 
 
+def test_upload_staging(tmp: str) -> None:
+    section("Server: upload staging")
+    store = uploads.UploadStore(ttl_seconds=60, max_file_bytes=1024 * 1024,
+                                max_total_bytes=3 * 1024 * 1024, max_entries=3)
+    code = store.put(b"hello world" * 10, "CV.docx")
+    check("put returns an id", bool(code) and len(code) >= 8, code)
+
+    content, name = store.take(code)
+    check("take returns the content", content.startswith(b"hello world"))
+    check("take returns the filename", name == "CV.docx", name)
+
+    try:
+        store.take(code)
+        check("ids are single use", False, "second take succeeded")
+    except uploads.UploadError as exc:
+        check("ids are single use", "already used" in str(exc), str(exc)[:60])
+
+    try:
+        store.take("never-existed")
+        check("unknown id is rejected", False, "no exception")
+    except uploads.UploadError:
+        check("unknown id is rejected", True)
+
+    expired = uploads.UploadStore(ttl_seconds=0, max_file_bytes=1024)
+    old = expired.put(b"data", "x.pdf")
+    try:
+        expired.take(old)
+        check("expired id is rejected", False, "no exception")
+    except uploads.UploadError as exc:
+        check("expired id is rejected", "expired" in str(exc), str(exc)[:60])
+
+    try:
+        store.put(b"x" * (2 * 1024 * 1024), "big.pdf")
+        check("oversize upload rejected", False, "no exception")
+    except uploads.UploadError as exc:
+        check("oversize upload rejected", "limit" in str(exc), str(exc)[:60])
+
+    try:
+        store.put(b"", "empty.pdf")
+        check("empty upload rejected", False, "no exception")
+    except uploads.UploadError:
+        check("empty upload rejected", True)
+
+    small = uploads.UploadStore(ttl_seconds=60, max_file_bytes=1024, max_entries=2)
+    small.put(b"a" * 10, "a.pdf")
+    small.put(b"b" * 10, "b.pdf")
+    try:
+        small.put(b"c" * 10, "c.pdf")
+        check("entry cap enforced", False, "third put succeeded")
+    except uploads.UploadError as exc:
+        check("entry cap enforced", "too many" in str(exc), str(exc)[:60])
+
+    capped = uploads.UploadStore(ttl_seconds=60, max_file_bytes=1024,
+                                 max_total_bytes=1500, max_entries=10)
+    capped.put(b"x" * 900, "a.pdf")
+    try:
+        capped.put(b"y" * 900, "b.pdf")
+        check("total size cap enforced", False, "second put succeeded")
+    except uploads.UploadError as exc:
+        check("total size cap enforced", "full" in str(exc), str(exc)[:60])
+
+    # End to end through core: an id is all the caller needs.
+    live = uploads.UploadStore(ttl_seconds=60, max_file_bytes=core.MAX_FILE_BYTES)
+    core.set_upload_store(live)
+    try:
+        docx = DF.build_docx(os.path.join(tmp, "staged.docx"))
+        with open(docx, "rb") as fh:
+            docx_bytes = fh.read()
+        pdf_bytes = PF.multi_page_text_pdf(DF.plain_text())
+        dcode = live.put(docx_bytes, "20260811_CV.docx")
+        pcode = live.put(pdf_bytes, "20260811_CV.pdf")
+
+        report = core.validate_deliverables(docx_upload_id=dcode, pdf_upload_id=pcode)
+        check("validate works from ids alone",
+              report["validation"]["passed"] is True,
+              str(report["validation"]["counts"]))
+        check("uploaded filename flows into the report",
+              report["docx"]["filename"] == "20260811_CV.docx",
+              report["docx"]["filename"])
+        check("staging is emptied after use", live.peek_count() == 0,
+              str(live.peek_count()))
+
+        try:
+            core.validate_deliverables(docx_upload_id=dcode)
+            check("a consumed id cannot be replayed", False, "no exception")
+        except core.BadUpload as exc:
+            check("a consumed id cannot be replayed", "already used" in str(exc),
+                  str(exc)[:60])
+
+        rcode = live.put(pdf_bytes, "cv.pdf")
+        try:
+            core.check_resume(upload_id=rcode, content_b64="aGk=")
+            check("id plus base64 is rejected", False, "no exception")
+        except core.BadUpload as exc:
+            check("id plus base64 is rejected", "exactly one" in str(exc),
+                  str(exc)[:60])
+    finally:
+        core.set_upload_store(None)
+
+    try:
+        core.check_resume(upload_id="anything")
+        check("id without staging gives a clear error", False, "no exception")
+    except core.BadUpload as exc:
+        check("id without staging gives a clear error",
+              "no upload staging" in str(exc), str(exc)[:70])
+
+
 def main() -> int:
     print("ats-mcp server test suite")
     with tempfile.TemporaryDirectory() as tmp:
         for fn in (test_validate, test_check_and_extract, test_upload_guards,
-                   test_ssrf_guards, test_no_residue):
+                   test_ssrf_guards, test_upload_staging, test_no_residue):
             try:
                 fn(tmp)
             except Exception as exc:  # noqa: BLE001

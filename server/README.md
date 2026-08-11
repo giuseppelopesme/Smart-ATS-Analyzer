@@ -3,10 +3,11 @@
 The validator and checker, exposed as an MCP server you can run on a VPS and
 reach from iPhone, iPad, Mac and the web equally.
 
-**Stateless.** A document arrives as base64 or as a public HTTPS URL the server
-fetches, is written to a temp directory that is deleted before the call
-returns, and is never logged. Nothing survives the request; there is no
-database and no upload folder.
+**Nothing is written to disk.** A document reaches the server three ways —
+a one-time upload id, a public HTTPS URL, or base64 — is processed in a temp
+directory deleted before the call returns, and is never logged. Staged uploads
+live in RAM only, are single-use, and expire. There is no database and no
+upload folder.
 
 ## Tools
 
@@ -16,8 +17,47 @@ database and no upload folder.
 | `ats_check_resume` | parseability + JD fit for any resume |
 | `ats_extract_text` | exactly what an ATS extracts, in layout or content-stream order |
 
-Each accepts **either** `*_base64` **or** `*_url` — never both, because
-silently preferring one would leave you unsure which file was checked.
+Each accepts exactly one of `upload_id`, `*_url` or `*_base64` — never two,
+because silently preferring one would leave you unsure which file was checked.
+
+## Getting a file to it, from any device
+
+| | iPhone | iPad | Mac | Web |
+|---|:--:|:--:|:--:|:--:|
+| **Upload page** → one-time id | ✅ | ✅ | ✅ | ✅ |
+| Shortcut → id, automatically | ✅ | ✅ | ✅ | — |
+| Direct-download URL | ✅ | ✅ | ✅ | ✅ |
+| base64 in the call | — | — | ✅ | — |
+
+The **upload page** at `<MCP_PATH>/upload` is the route that works everywhere.
+Open it in Safari, pick the CV (the picker reads iCloud Drive directly), and
+you get a short id:
+
+```
+Uploaded 20260811_Giuseppe LOPES_Campari Global AI Director.docx
+              N7TltgQN2aBm
+In Claude: "validate upload N7TltgQN2aBm"
+```
+
+Ids are **single-use** and expire after 30 minutes. Validating consumes the id;
+re-running needs a fresh upload. base64 is marked unavailable on phones on
+purpose — a model cannot reliably emit a megabyte of it for an attached file.
+
+### A Shortcut, so it is two taps
+
+Runs identically on iPhone, iPad and Mac. Share sheet → your CV → the id is on
+the clipboard.
+
+1. **Shortcuts → new shortcut → Share Sheet**, accepting *Files*.
+2. **Get Contents of URL**
+   - URL `https://YOUR.DOMAIN/mcp/<secret>/upload`
+   - Method `POST`, Request Body `Form`
+   - Header `Accept` = `application/json`
+   - Field: type **File**, name `file`, value *Shortcut Input*
+3. **Get Dictionary Value** — key `upload_id`
+4. **Copy to Clipboard**
+
+Then in Claude: *"validate upload ⌘V"*.
 
 ---
 
@@ -70,22 +110,10 @@ file. An iCloud 'Copy Link' share URL points at a viewer page whose download
 runs in JavaScript, so a server cannot follow it.
 ```
 
-**What works from every Apple surface:**
-
-| Route | iPhone | iPad | Mac | Web |
-|---|:--:|:--:|:--:|:--:|
-| Attach the file in the conversation, model sends base64 | ~ | ~ | ~ | ~ |
-| A direct-download URL (Dropbox `?dl=1`, presigned S3/R2) | ✅ | ✅ | ✅ | ✅ |
-| A Shortcut that reads iCloud Drive and uploads to your own host | ✅ | ✅ | ✅ | — |
-
-"~" because base64 only works when something can produce it — fine from a
-script or Claude Code, unreliable for a large attached PDF, since the model
-would have to emit a megabyte of base64 verbatim.
-
-The honest summary: **the MCP server is reachable from everywhere; getting an
-iCloud file to it is the part Apple makes awkward.** A Shortcut (which runs
-identically on iPhone, iPad and Mac) that copies the CV to any host serving raw
-bytes is the most reliable bridge.
+This is exactly why the upload page exists: it is the one route that works from
+every device, and it turns "Apple will not let a Linux box read iCloud" into a
+file picker that reads iCloud Drive natively on the device you are already
+holding.
 
 ---
 
@@ -163,6 +191,9 @@ A JSON-RPC result means it is live. Any other path must return 404:
 curl -si https://YOUR.DOMAIN/mcp/wrong | head -1   # expect 404
 ```
 
+Then open `https://YOUR.DOMAIN${MCP_PATH}/upload` on your phone and upload
+something small; you should get an id back.
+
 ### 7. Connect Claude
 
 **claude.ai / iOS / iPadOS / Web** — Settings → Connectors → Add custom
@@ -201,6 +232,7 @@ machine. The VPS only buys you reachability from the phone.
 | `MCP_PATH` | — | required for HTTP; must not be `/mcp` |
 | `MCP_HOST` | `127.0.0.1` | bind address; keep it loopback behind a proxy |
 | `MCP_PORT` | `8080` | bind port |
+| `MCP_UPLOAD_TTL` | `1800` | seconds a staged upload lives. `0` disables the upload page entirely |
 
 Limits: 12 MB per document, 60,000 characters of job description, 20 s fetch
 timeout, at most 3 redirects.
@@ -217,3 +249,7 @@ timeout, at most 3 redirects.
   the rest never reaches the filesystem.
 - **Bounded work.** Size caps are enforced before allocation, and the PDF
   parser has its own operation ceiling.
+- **Staging.** In memory only, 12 MB per file, 64 MB and 16 entries in total,
+  single-use, 30-minute expiry, swept on every put and take. A restart drops
+  everything. It sits under the same secret path as the MCP endpoint, so one
+  secret and one proxy rule cover both. Set `MCP_UPLOAD_TTL=0` to remove it.
