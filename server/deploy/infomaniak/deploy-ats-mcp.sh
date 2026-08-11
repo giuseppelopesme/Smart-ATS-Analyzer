@@ -86,26 +86,39 @@ else
     log "DNS OK — $ATS_HOST → $_resolved"
 fi
 
-# An AAAA record is worth flagging loudly. Let's Encrypt PREFERS IPv6 when one
-# exists and does not fall back to IPv4 on failure, so publishing AAAA for a
-# host whose v6 inbound is not actually open means no certificate at all --
-# and Caddy then backs off, which makes it look intermittent rather than
-# misconfigured.
+# Dual-stack is supported, but Let's Encrypt resolves AAAA first and does NOT
+# fall back to IPv4 when the v6 challenge fails. So when an AAAA is published,
+# the v6 path has to be right -- these are the parts that can be checked from
+# here. Inbound reachability cannot be, which is what check-ipv6.sh is for.
 _v6="$(getent ahostsv6 "$ATS_HOST" 2>/dev/null | awk 'NR==1{print $1}' || echo '')"
 if [ -n "$_v6" ]; then
-    warn "$ATS_HOST has an AAAA record ($_v6)."
-    warn "Let's Encrypt will try IPv6 FIRST and will not fall back to IPv4."
-    _siblings_have_v6=""
-    for _h in vault.lopes.me couch.lopes.me status.lopes.me; do
-        if [ -n "$(getent ahostsv6 "$_h" 2>/dev/null | awk 'NR==1{print $1}')" ]; then
-            _siblings_have_v6=1
-        fi
-    done
-    if [ -z "$_siblings_have_v6" ]; then
-        warn "None of the working hosts on this box publish AAAA, so IPv6 ingress"
-        warn "here is unproven. Unless you have confirmed inbound 443 over IPv6"
-        warn "reaches Caddy, remove the AAAA record and use A only."
+    log "$ATS_HOST publishes AAAA $_v6 — validating the IPv6 path"
+    _local_v6="$(ip -6 addr show scope global 2>/dev/null \
+                 | awk '/inet6/{print $2}' | cut -d/ -f1 | grep -v '^fe80' || true)"
+    if [ -z "$_local_v6" ]; then
+        die "$ATS_HOST has an AAAA record but this host has no global IPv6 address.
+     Certificate issuance will fail and Caddy will back off.
+     Either enable IPv6 on the VPS or remove the AAAA record."
+    elif ! grep -qxF "$_v6" <<<"$_local_v6"; then
+        die "$ATS_HOST resolves to $_v6, which is not an address on this host:
+$(sed 's/^/       /' <<<"$_local_v6")
+     Fix the AAAA record before continuing."
+    else
+        log "IPv6 address matches this host"
     fi
+    if ! ip -6 route show default 2>/dev/null | grep -q .; then
+        warn "No default IPv6 route — ACME over IPv6 will fail."
+    fi
+    if command -v ufw >/dev/null 2>&1 && ! grep -qi '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
+        warn "IPV6 is not enabled in /etc/default/ufw, so the 80/443 rules do not"
+        warn "cover IPv6. Fix, then re-run:"
+        warn "  sudo sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw"
+        warn "  sudo ufw disable && sudo ufw --force enable"
+    fi
+    warn "Local IPv6 config looks right, but inbound reachability through the"
+    warn "Infomaniak panel firewall cannot be checked from this host. If the"
+    warn "certificate does not issue, that is the first place to look."
+    warn "  ./check-ipv6.sh   prints the external test to run"
 fi
 
 # ----------------------------------------------------------------------------

@@ -136,25 +136,51 @@ Ports on that host: `8420` obsidian-web-mcp · `5984` CouchDB · `61208` Glances
 · **`8430`** this. Nothing existing is modified — the vhost is a drop-in under
 `/etc/caddy/conf.d/`, the same pattern `deploy-monitoring.sh` uses.
 
-1. **DNS** — one record, in the Infomaniak Manager (Domains → `lopes.me` → DNS):
+1. **DNS + IPv6.** Dual-stack is supported. Because Let's Encrypt resolves
+   AAAA first and does **not** fall back to IPv4 when the v6 challenge fails,
+   prove IPv6 ingress *before* publishing the AAAA — otherwise you get no
+   certificate at all and Caddy backs off, which reads as flaky rather than
+   misconfigured.
+
+   ```bash
+   sudo git clone https://github.com/giuseppelopesme/Smart-ATS-Analyzer.git /opt/ats-mcp-src
+   cd /opt/ats-mcp-src/server/deploy/infomaniak
+   sudo EXPECT_V6=2001:1600:18:207::190 ./check-ipv6.sh
+   ```
+
+   It is read-only and checks the whole local chain: global v6 address present
+   and matching, default v6 route, outbound v6, `IPV6=yes` in
+   `/etc/default/ufw` (without it the 80/443 rules are v4-only), and Caddy
+   listening on v6. Then it prints the one test it cannot run for you —
+   inbound reachability through the **Infomaniak panel firewall**, which is a
+   separate layer from `ufw` and the most likely blocker:
+
+   ```bash
+   # from any IPv6-capable network — your Mac at home, or a phone on mobile data
+   curl -6 -sS -o /dev/null -w '%{http_code}\n' "http://[2001:1600:18:207::190]/"
+   ```
+
+   Any response — `200`, `308`, `404` — means inbound v6 reaches Caddy. A hang
+   or "Couldn't connect" means it is blocked; open 80/443 for IPv6 in the
+   Manager firewall and retest.
+
+   Once that answers, add both records:
 
    | Type | Name | Target |
    |---|---|---|
-   | `A` | `ats` | the same IPv4 as `vault.lopes.me` |
+   | `A` | `ats` | `179.237.107.22` |
+   | `AAAA` | `ats` | `2001:1600:18:207::190` |
 
-   **A only — do not add AAAA.** Let's Encrypt prefers IPv6 when an AAAA
-   record exists and does *not* fall back to IPv4 if the challenge fails
-   there, so publishing AAAA for a host whose v6 ingress is unproven means no
-   certificate at all, and Caddy then backs off in a way that looks
-   intermittent rather than misconfigured. `vault.lopes.me`,
-   `couch.lopes.me` and `status.lopes.me` are all A-only, so IPv6 on this box
-   is untested. Add AAAA later if you want it, but prove inbound 443 over IPv6
-   reaches Caddy first — and add it to `vault.lopes.me` at the same time.
+   Ports 80/443 are already open for IPv4 from the Obsidian setup, so **no
+   IPv4 firewall change** — only IPv6 may need opening.
 
-   Wait for it to resolve before step 3; the script checks and warns.
+   The container stays published on `127.0.0.1:8430`. Caddy reaches it over
+   IPv4 loopback regardless of how the client arrived, so **Docker needs no
+   IPv6 configuration** — public dual-stack is entirely Caddy's business.
 
-   Ports 80 and 443 are already open in the Infomaniak panel firewall and in
-   `ufw` from the Obsidian setup. Same IP, same ports — **no firewall change.**
+   *Rollback if the certificate will not issue:* delete the AAAA record, then
+   `sudo systemctl restart caddy`. Caddy retries on IPv4 immediately rather
+   than waiting out its backoff.
 
 2. **Get the code onto the box**
 
