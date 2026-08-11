@@ -191,6 +191,7 @@ server/
   uploads.py            single-use in-memory staging + upload page
   oauth.py              OAuth 2.1 authorization server + login page
   deploy/               systemd unit, Caddyfile, Dockerfile
+    infomaniak/         one-shot deploy onto an existing Caddy + Docker VPS
 tools/package_skill.py  build + validate the uploadable zip
 ```
 

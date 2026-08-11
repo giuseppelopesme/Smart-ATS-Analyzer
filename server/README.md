@@ -122,6 +122,72 @@ holding.
 
 ---
 
+## Deploying onto the existing Infomaniak VPS
+
+If you already run the Obsidian stack on this box (`vault.lopes.me`,
+`couch.lopes.me`, `status.lopes.me`), use this instead of the from-scratch
+guide below. It reuses the Caddy that is already there and adds one hostname.
+
+```
+Claude ──HTTPS/OAuth──▶ ats.lopes.me ─▶ Caddy :443 ─▶ 127.0.0.1:8430 ats-mcp (Docker)
+```
+
+Ports on that host: `8420` obsidian-web-mcp · `5984` CouchDB · `61208` Glances
+· **`8430`** this. Nothing existing is modified — the vhost is a drop-in under
+`/etc/caddy/conf.d/`, the same pattern `deploy-monitoring.sh` uses.
+
+1. **DNS** — add an A record for `ats.lopes.me` pointing at the VPS, and let it
+   resolve before step 3. Port 80 and 443 are already open from the Obsidian
+   setup, so nothing changes in the Infomaniak firewall.
+
+2. **Get the code onto the box**
+
+   ```bash
+   sudo git clone https://github.com/giuseppelopesme/Smart-ATS-Analyzer.git /opt/ats-mcp-src
+   ```
+
+3. **Deploy**
+
+   ```bash
+   cd /opt/ats-mcp-src/server/deploy/infomaniak
+   sudo ./deploy-ats-mcp.sh
+   ```
+
+   It prompts once for a passphrase, stores only its scrypt hash in
+   `/etc/ats-mcp/ats-mcp.env` (0640 `root:obsidian`), builds the image, starts
+   the container on loopback, writes `/etc/caddy/conf.d/ats.caddy`, runs
+   `caddy validate` and reloads. It refuses to touch Caddy if the backend is
+   not answering, and refuses to start at all if the port belongs to something
+   that is not ours.
+
+   Re-running is safe: it rebuilds and restarts, and never regenerates the
+   passphrase or drops OAuth state.
+
+4. **Connect** — Claude → Settings → Connectors → Add custom connector →
+   `https://ats.lopes.me/mcp`, Client ID/Secret blank (dynamic registration),
+   then sign in. Exactly the flow you used for `vault.lopes.me`.
+
+**Backups.** Deliberately not in the restic set. The only persisted state is
+registered OAuth clients and refresh tokens, in a Docker volume; losing it
+costs one sign-in. No CV is ever written to disk on the server.
+
+**Updating**
+
+```bash
+cd /opt/ats-mcp-src && sudo git pull
+cd server/deploy/infomaniak && sudo ./deploy-ats-mcp.sh
+```
+
+**Removing it**
+
+```bash
+cd /opt/ats-mcp-src/server/deploy/infomaniak && sudo docker compose down -v
+sudo rm /etc/caddy/conf.d/ats.caddy && sudo systemctl reload caddy
+sudo rm -rf /etc/ats-mcp
+```
+
+---
+
 ## Provisioning from nothing
 
 Any 1 GB VPS is plenty. Debian 12 assumed.

@@ -1,0 +1,64 @@
+# ats-mcp on the Infomaniak VPS, alongside obsidian-web-mcp and CouchDB.
+#
+# Loopback-bound, exactly like every other backend on this host: Caddy is the
+# only public entry point and terminates TLS for ats.lopes.me.
+#
+# Ports already in use on this box: 8420 obsidian-web-mcp, 5984 CouchDB,
+# 61208 Glances. This takes 8430.
+
+services:
+  ats-mcp:
+    build:
+      context: ../../..
+      dockerfile: server/deploy/Dockerfile
+    image: ats-mcp:local
+    container_name: ats-mcp
+    restart: unless-stopped
+
+    # Published to loopback only — never 0.0.0.0.
+    ports:
+      - "127.0.0.1:8430:8080"
+
+    env_file:
+      - /etc/ats-mcp/ats-mcp.env
+    environment:
+      MCP_TRANSPORT: http
+      MCP_HOST: 0.0.0.0          # inside the container; the publish is loopback
+      MCP_PORT: "8080"
+      MCP_PATH: /mcp
+      ATS_OAUTH_STATE: /var/lib/ats-mcp/oauth.json
+
+    # Registered OAuth clients and refresh tokens. Losing it only means
+    # signing in again, so it is deliberately not in the restic set.
+    volumes:
+      - ats-mcp-state:/var/lib/ats-mcp
+
+    # The process writes nothing outside the state volume and /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    pids_limit: 128
+
+    healthcheck:
+      # Discovery must be served for the connector to work at all, so it is
+      # the honest thing to health-check.
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/.well-known/oauth-authorization-server', timeout=5).status==200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ats-mcp-state:
