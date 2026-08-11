@@ -28,21 +28,59 @@ import secrets
 import sys
 from typing import Annotated, Any, Dict, Optional
 
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import core  # noqa: E402
+import oauth  # noqa: E402
 import uploads  # noqa: E402
 
 SERVER_NAME = "ats_mcp"
 MAX_MB = core.MAX_FILE_BYTES // (1024 * 1024)
+REQUIRED_SCOPE = "ats:validate"
+
+
+def _build_auth() -> tuple:
+    """Configure OAuth from the environment, or return (None, None).
+
+    Returns (provider, AuthSettings). Both are None when OAuth is not
+    configured, in which case the secret-path deployment applies.
+    """
+    public_url = os.environ.get("MCP_PUBLIC_URL", "").rstrip("/")
+    password_hash = os.environ.get("ATS_OAUTH_PASSWORD_HASH", "").strip()
+    if not public_url or not password_hash:
+        return None, None
+
+    provider = oauth.AtsAuthProvider(
+        base_url=public_url,
+        password_hash=password_hash,
+        state_path=os.environ.get("ATS_OAUTH_STATE", "/var/lib/ats-mcp/oauth.json"),
+    )
+    settings = AuthSettings(
+        issuer_url=AnyHttpUrl(public_url),
+        resource_server_url=AnyHttpUrl(public_url),
+        required_scopes=[REQUIRED_SCOPE],
+        client_registration_options=ClientRegistrationOptions(
+            enabled=True,                       # claude.ai registers itself
+            valid_scopes=[REQUIRED_SCOPE],
+            default_scopes=[REQUIRED_SCOPE],
+        ),
+        revocation_options=RevocationOptions(enabled=True),
+    )
+    return provider, settings
+
+
+AUTH_PROVIDER, AUTH_SETTINGS = _build_auth()
 
 mcp = MCPServer(
     name=SERVER_NAME,
     title="ATS CV validator",
     version="1.0.0",
+    auth_server_provider=AUTH_PROVIDER,
+    auth=AUTH_SETTINGS,
     instructions=(
         "Validates CV deliverables against a canonical ATS structure and reviews "
         "resumes for machine parseability and job-description fit.\n\n"
@@ -488,6 +526,42 @@ def register_upload_routes(base_path: str, store: "uploads.UploadStore") -> None
         return HTMLResponse(uploads.form_page(ttl, error=message), status_code=400)
 
 
+def register_login_routes(provider: "oauth.AtsAuthProvider") -> None:
+    """Mount the login page the authorization endpoint redirects to.
+
+    These live at a fixed, public path rather than under the secret one: the
+    browser arrives here from Claude's OAuth redirect, and with OAuth in place
+    the passphrase is the access control, not the URL.
+    """
+    from starlette.requests import Request
+    from starlette.responses import HTMLResponse, RedirectResponse
+
+    @mcp.custom_route("/oauth/login", methods=["GET"], include_in_schema=False)
+    async def login_form(request: Request) -> HTMLResponse:
+        txn = request.query_params.get("txn", "")
+        name = provider.pending_client_name(txn)
+        if name is None:
+            return HTMLResponse(
+                oauth.login_page(txn, "An application",
+                                 "This login link has expired. Start again from Claude."),
+                status_code=400)
+        return HTMLResponse(oauth.login_page(txn, name))
+
+    @mcp.custom_route("/oauth/login", methods=["POST"], include_in_schema=False)
+    async def login_submit(request: Request):
+        form = await request.form()
+        txn = str(form.get("txn", ""))
+        password = str(form.get("password", ""))
+        try:
+            redirect_to = provider.complete_login(txn, password)
+        except ValueError as exc:
+            name = provider.pending_client_name(txn) or "An application"
+            return HTMLResponse(oauth.login_page(txn, name, str(exc)), status_code=400)
+        # 303 so the browser reissues as GET and the passphrase leaves the
+        # form submission behind.
+        return RedirectResponse(redirect_to, status_code=303)
+
+
 # --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
@@ -504,19 +578,19 @@ def main() -> int:
               f"(use 'stdio' or 'http')", file=sys.stderr)
         return 2
 
-    path = os.environ.get("MCP_PATH", "")
-    if not path or path == "/mcp":
-        # claude.ai connectors cannot send a static bearer token, so an
-        # unguessable path is the practical access control. Refuse to start on
-        # a default path rather than quietly exposing an open endpoint.
+    path = os.environ.get("MCP_PATH", "/mcp")
+    if AUTH_PROVIDER is None and (not path or path == "/mcp"):
+        # Without OAuth the only thing protecting the endpoint is the URL, so
+        # refuse a guessable one rather than quietly serving an open endpoint.
         suggestion = f"/mcp/{secrets.token_urlsafe(24)}"
         print(
-            "error: MCP_PATH must be set to an unguessable path before serving "
-            "over HTTP.\n"
-            f"       Suggested: MCP_PATH={suggestion}\n"
-            "       See README.md — claude.ai custom connectors support OAuth "
-            "only, with no field for an API key, so the secret path is what "
-            "keeps this endpoint private.",
+            "error: this server is unauthenticated, so MCP_PATH must be an "
+            "unguessable path.\n"
+            f"       Either set MCP_PATH={suggestion}\n"
+            "       or configure OAuth by setting MCP_PUBLIC_URL and "
+            "ATS_OAUTH_PASSWORD_HASH\n"
+            "       (generate the hash with: python3 server/oauth.py "
+            "--hash-password).",
             file=sys.stderr,
         )
         return 2
@@ -541,6 +615,18 @@ def main() -> int:
     # alone, a large upload would be rejected by the transport with an error
     # that says nothing about size limits.
     max_body = int(core.MAX_FILE_BYTES * 4 / 3) + (2 * 1024 * 1024)
+
+    if AUTH_PROVIDER is not None:
+        register_login_routes(AUTH_PROVIDER)
+        print(f"  OAuth 2.1 enabled — issuer {AUTH_PROVIDER.base_url}, "
+              f"scope {REQUIRED_SCOPE}, dynamic client registration on",
+              file=sys.stderr)
+        print(f"  {len(AUTH_PROVIDER.clients)} client(s) already registered",
+              file=sys.stderr)
+    else:
+        print("  OAuth NOT configured — access control is the secret path alone. "
+              "Set MCP_PUBLIC_URL and ATS_OAUTH_PASSWORD_HASH to enable it.",
+              file=sys.stderr)
 
     print(f"{SERVER_NAME} listening on http://{host}:{port}{path}", file=sys.stderr)
     mcp.run(

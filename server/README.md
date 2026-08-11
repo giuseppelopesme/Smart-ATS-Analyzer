@@ -66,31 +66,36 @@ Then in Claude: *"validate upload ⌘V"*.
 Two constraints decide the design. Both are external, and neither has a
 workaround I can honestly recommend.
 
-### 1. claude.ai connectors cannot send an API key
+### 1. Authentication is OAuth 2.1
 
-The custom-connector UI supports **OAuth 2.1 with PKCE only**. There is no
-field for a static bearer token or a custom header
+claude.ai's custom-connector UI supports **OAuth 2.1 with PKCE only** — there
+is no field for a static bearer token or a custom header
 ([anthropics/claude-ai-mcp#112](https://github.com/anthropics/claude-ai-mcp/issues/112),
-[#411](https://github.com/anthropics/claude-ai-mcp/issues/411)). So the usual
-"put an API key on it" plan does not work.
+[#411](https://github.com/anthropics/claude-ai-mcp/issues/411)). So the server
+is a real authorization server.
 
-This deployment therefore uses an **unguessable URL path** as the access
-control — a capability URL:
+Set `MCP_PUBLIC_URL` and `ATS_OAUTH_PASSWORD_HASH` and you get:
 
-```
-https://ats.example.com/mcp/8Kd2nQ7xR4vT9pL3mW6yB1cF5hJ0sA
-```
+- discovery at `/.well-known/oauth-authorization-server` and
+  `/.well-known/oauth-protected-resource`
+- **dynamic client registration** — claude.ai registers itself, no client id to
+  copy anywhere
+- `/authorize` → a **login page**; a code is issued only after your passphrase
+  verifies. The authorization endpoint never mints a code on its own, which is
+  the difference between an authorization server and an open door
+- **PKCE S256 enforced** by the SDK, along with `redirect_uri` matching
+- one-hour access tokens, **rotating** refresh tokens, single-use codes,
+  revocation
+- passphrase stored as **scrypt** (N=2¹⁵), compared in constant time, with
+  lockout after 8 failures in 5 minutes
 
-The server **refuses to start** on a guessable path, rather than quietly
-exposing an open endpoint. Caddy 404s every other path and redacts the URI
-from its logs.
+Registered clients and refresh tokens persist to a 0600 file so a restart does
+not unpair the connector. Access tokens and codes stay in memory.
 
-Be clear-eyed about what that is: anyone holding the URL can call the server.
-It is a bearer token that happens to live in a URL. Treat it like a password —
-do not paste it into a shared document, and rotate it by changing `MCP_PATH`
-and restarting. If you want real auth, the server needs to become an OAuth 2.1
-authorization server; the SDK supports it via `auth_server_provider`, and it is
-a significantly larger job.
+**Secret-path mode still exists** for a server with no domain or no OAuth: omit
+those two variables and access control becomes an unguessable `MCP_PATH`. The
+server refuses to start on a guessable path in that mode, since the URL is then
+the only credential. Prefer OAuth.
 
 ### 2. The VPS cannot read iCloud, and an iCloud share link is not a file
 
@@ -141,14 +146,25 @@ python3 -m venv .venv
 chown -R atsmcp:atsmcp /opt/ats-mcp
 ```
 
-### 3. Secret path
+### 3. OAuth configuration
 
 ```bash
-python3 -c "import secrets; print('MCP_PATH=/mcp/' + secrets.token_urlsafe(24))" \
-  > /etc/ats-mcp.env
+/opt/ats-mcp/.venv/bin/python /opt/ats-mcp/server/oauth.py --hash-password
+# prompts twice, prints: ATS_OAUTH_PASSWORD_HASH=scrypt$...
+
+cat > /etc/ats-mcp.env <<'EOF'
+MCP_PUBLIC_URL=https://YOUR.DOMAIN
+ATS_OAUTH_PASSWORD_HASH=scrypt$...paste the line above...
+EOF
 chmod 600 /etc/ats-mcp.env
-cat /etc/ats-mcp.env      # note it down; you need it for the connector URL
 ```
+
+`MCP_PUBLIC_URL` must be the exact external HTTPS origin — it is published as
+the OAuth issuer, and a mismatch makes the client reject the metadata.
+
+The passphrase is the only thing between the internet and your documents, so
+make it long. To run without OAuth instead, put an unguessable
+`MCP_PATH=/mcp/…` in this file and omit the two variables above.
 
 ### 4. Service
 
@@ -185,21 +201,29 @@ curl -sS -X POST "https://YOUR.DOMAIN${MCP_PATH}" \
                  "clientInfo":{"name":"curl","version":"1"}}}'
 ```
 
-A JSON-RPC result means it is live. Any other path must return 404:
+With OAuth on, that must return **401** with a `WWW-Authenticate` header
+pointing at the resource metadata — that is the handshake working, not a
+failure. Check discovery too:
 
 ```bash
-curl -si https://YOUR.DOMAIN/mcp/wrong | head -1   # expect 404
+curl -s https://YOUR.DOMAIN/.well-known/oauth-authorization-server | jq .
 ```
 
-Then open `https://YOUR.DOMAIN${MCP_PATH}/upload` on your phone and upload
-something small; you should get an id back.
+Then open `https://YOUR.DOMAIN/mcp/upload` on your phone and upload something
+small; you should get an id back.
 
 ### 7. Connect Claude
 
 **claude.ai / iOS / iPadOS / Web** — Settings → Connectors → Add custom
-connector → paste `https://YOUR.DOMAIN/mcp/<secret>`, no authentication.
+connector → `https://YOUR.DOMAIN/mcp`. Claude discovers the OAuth endpoints,
+registers itself, and opens the login page; enter your passphrase and it is
+paired. The same connector then works on every device signed into your account.
 
-**Claude Code** — `claude mcp add --transport http ats https://YOUR.DOMAIN/mcp/<secret>`
+**Claude Code** — `claude mcp add --transport http ats https://YOUR.DOMAIN/mcp`
+then `/mcp` to run the browser login.
+
+To revoke: remove the connector, or delete `/var/lib/ats-mcp/oauth.json` and
+restart, which unpairs every client at once.
 
 ### Docker alternative
 
@@ -233,6 +257,9 @@ machine. The VPS only buys you reachability from the phone.
 | `MCP_HOST` | `127.0.0.1` | bind address; keep it loopback behind a proxy |
 | `MCP_PORT` | `8080` | bind port |
 | `MCP_UPLOAD_TTL` | `1800` | seconds a staged upload lives. `0` disables the upload page entirely |
+| `MCP_PUBLIC_URL` | — | external HTTPS origin; enables OAuth when set with the hash |
+| `ATS_OAUTH_PASSWORD_HASH` | — | scrypt hash from `oauth.py --hash-password` |
+| `ATS_OAUTH_STATE` | `/var/lib/ats-mcp/oauth.json` | 0600 file holding registered clients and refresh tokens |
 
 Limits: 12 MB per document, 60,000 characters of job description, 20 s fetch
 timeout, at most 3 redirects.
@@ -249,6 +276,10 @@ timeout, at most 3 redirects.
   the rest never reaches the filesystem.
 - **Bounded work.** Size caps are enforced before allocation, and the PDF
   parser has its own operation ceiling.
+- **OAuth.** Codes are single-use and expire in 5 minutes; access tokens last
+  an hour; refresh tokens rotate on every use, so a leaked one is good at most
+  once. Login has a lockout. The state file holds no passphrase — only its
+  scrypt hash lives in the environment, and that never reaches disk.
 - **Staging.** In memory only, 12 MB per file, 64 MB and 16 entries in total,
   single-use, 30-minute expiry, swept on every put and take. A restart drops
   everything. It sits under the same secret path as the MCP endpoint, so one

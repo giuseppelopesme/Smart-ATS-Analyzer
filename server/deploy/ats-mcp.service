@@ -12,8 +12,9 @@ WorkingDirectory=/opt/ats-mcp
 Environment=MCP_TRANSPORT=http
 Environment=MCP_HOST=127.0.0.1
 Environment=MCP_PORT=8080
-# Generate once with: python3 -c "import secrets;print('/mcp/'+secrets.token_urlsafe(24))"
-# This secret path is the access control -- see README.md.
+Environment=ATS_OAUTH_STATE=/var/lib/ats-mcp/oauth.json
+# Holds MCP_PUBLIC_URL, ATS_OAUTH_PASSWORD_HASH and (OAuth off only) MCP_PATH.
+# See README.md.
 EnvironmentFile=/etc/ats-mcp.env
 ExecStart=/opt/ats-mcp/.venv/bin/python /opt/ats-mcp/server/ats_mcp.py
 Restart=on-failure
@@ -34,8 +35,10 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-# Nothing is written to disk except temp files, which PrivateTmp isolates.
-ReadWritePaths=
+# Creates and owns /var/lib/ats-mcp, mode 0700 -- the only writable path.
+# It holds registered OAuth clients and refresh tokens, never any document.
+StateDirectory=ats-mcp
+StateDirectoryMode=0700
 MemoryMax=1G
 TasksMax=64
 

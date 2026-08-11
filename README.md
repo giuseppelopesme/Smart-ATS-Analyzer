@@ -138,11 +138,15 @@ all work the same way**: pick the file (the picker reads iCloud Drive natively),
 get a single-use id, paste it to Claude. Staged files live in RAM, are consumed
 on use and expire after 30 minutes.
 
-Two constraints the guide covers rather than papers over: **claude.ai custom
-connectors support OAuth only** — there is no field for an API key, so access
-control is an unguessable URL path and the server refuses to start on a
-guessable one; and **an iCloud share link returns a viewer page, not the file**,
-which the fetcher detects and reports instead of validating the HTML.
+Authentication is **real OAuth 2.1**, because claude.ai connectors accept
+nothing else: discovery documents, dynamic client registration, a passphrase
+login page (the authorization endpoint never mints a code by itself), PKCE
+S256, rotating refresh tokens and revocation. Add the connector, sign in once,
+and it works on every device.
+
+One constraint the guide states rather than papers over: **an iCloud share link
+returns a viewer page, not the file**, which the fetcher detects and reports
+instead of validating the HTML.
 
 ## Use it from your phone
 
@@ -179,11 +183,13 @@ fails to compile, or anything imports a third-party module.
     aliases.json             synonym table
 tests/test_ats.py       107 tests, no sample files on disk
 tests/test_server.py    55 tests for the MCP core, no SDK required
+tests/test_oauth.py     47 tests for the OAuth server
 server/
   ats_mcp.py            MCP server (Streamable HTTP or stdio)
   core.py               bytes -> report, transport-agnostic
   fetching.py           URL fetch with SSRF guards
   uploads.py            single-use in-memory staging + upload page
+  oauth.py              OAuth 2.1 authorization server + login page
   deploy/               systemd unit, Caddyfile, Dockerfile
 tools/package_skill.py  build + validate the uploadable zip
 ```
@@ -207,6 +213,7 @@ are built on that.
 ```bash
 python3 tests/test_ats.py     # 107 passed, 0 failed
 python3 tests/test_server.py  #  55 passed, 0 failed
+python3 tests/test_oauth.py   #  47 passed, 0 failed (needs the MCP SDK)
 ```
 
 Every PDF and DOCX is constructed byte by byte in `tests/fixtures.py` and

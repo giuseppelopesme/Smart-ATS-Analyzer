@@ -3,10 +3,22 @@
 ats.example.com {
     encode gzip
 
-    # Only the secret MCP path is routed. Everything else 404s, so the
-    # endpoint is not discoverable by probing the domain.
-    # Covers both the MCP endpoint and the /upload page beneath it.
-    handle /mcp/* {
+    # OAuth 2.1 needs these to be publicly reachable, unauthenticated:
+    #   /.well-known/oauth-authorization-server  discovery (RFC 8414)
+    #   /.well-known/oauth-protected-resource    discovery (RFC 9728)
+    #   /register    dynamic client registration (RFC 7591) — claude.ai self-registers
+    #   /authorize   redirects the browser to the login page
+    #   /token       code and refresh-token exchange
+    #   /revoke      token revocation
+    #   /oauth/*     the login page itself
+    # Omit any of these and the connector fails partway through the handshake.
+    @oauth path /.well-known/* /authorize /token /register /revoke /oauth/*
+    handle @oauth {
+        reverse_proxy 127.0.0.1:8080
+    }
+
+    # The MCP endpoint, and the upload page beneath it.
+    handle /mcp* {
         # Enough for a 12 MB document as multipart or base64, and no more.
         request_body {
             max_size 20MB
@@ -25,14 +37,14 @@ ats.example.com {
         respond "Not found" 404
     }
 
-    # Never log the request path: it contains the secret.
+    # With OAuth on, the path is not a secret and can be logged normally.
+    # Running WITHOUT OAuth (secret-path mode) means the URI *is* the
+    # credential — uncomment the filter below so it never reaches the log.
     log {
         output file /var/log/caddy/ats-mcp.log
-        format filter {
-            request>uri query {
-                replace REDACTED
-            }
-        }
+        # format filter {
+        #     request>uri query { replace REDACTED }
+        # }
     }
 
     header {
