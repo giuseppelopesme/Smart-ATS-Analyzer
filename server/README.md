@@ -177,17 +177,28 @@ but run this on the server and the packet never leaves the box, bypassing
 both firewalls and answering even when inbound v6 is completely blocked. A
 false pass is worse than no test.
 
+First confirm the machine you are testing *from* has IPv6 — many home ISPs
+are still IPv4-only, and without this you cannot tell "the server blocks it"
+from "my laptop cannot speak IPv6":
+
 ```bash
-# On your Mac. Home Wi-Fi usually has IPv6; a phone on mobile data also works.
+# 💻 MAC
+curl -6 -sS https://ipv6.icanhazip.com          # no output = no IPv6 here
 curl -6 -sS -o /dev/null -w '%{http_code}\n' "http://[2001:1600:18:207::190]/"
 ```
 
-Any response — `200`, `308`, `404` — means inbound IPv6 on port 80 reaches
-Caddy, which is what ACME needs. A hang or `Couldn't connect` means blocked:
-open 80/443 for IPv6 in the Manager firewall and retest.
+Reading the second result:
 
-No IPv6 on your network? Use <https://ipv6-test.com/validate.php> against the
-address instead.
+| Result | Means |
+|---|---|
+| `200` / `308` / `404` | inbound IPv6 reaches Caddy — what ACME needs |
+| hangs, then times out | **blocked**; open 80/443 for IPv6 in the Manager firewall |
+| fails after ~`0 ms` | **not the server** — your own machine had no route and never sent a packet |
+
+That last row is the common one. An instant failure is local; a blocked
+firewall drops packets and makes you wait. If you hit it, test from a phone on
+mobile data (usually IPv6-native) or use
+<https://ipv6-test.com/validate.php>.
 
 ### Step 4 — 🌐 BROWSER · add the DNS records
 

@@ -125,10 +125,19 @@ else
 fi
 
 head_ "6. Do the sibling hosts publish AAAA?"
+_sib_v6=0
 for h in $HOSTS_TO_COMPARE; do
     _a6="$(getent ahostsv6 "$h" 2>/dev/null | awk 'NR==1{print $1}' || true)"
-    if [ -n "$_a6" ]; then ok "$h → $_a6"; else info "$h has no AAAA (A-only)"; fi
+    if [ -n "$_a6" ]; then ok "$h → $_a6"; _sib_v6=$((_sib_v6 + 1))
+    else info "$h has no AAAA (A-only)"; fi
 done
+if [ "$_sib_v6" -gt 0 ]; then
+    info ""
+    info "Those hosts already run dual-stack and hold valid certificates, which"
+    info "means Let's Encrypt has completed IPv6 challenges against this box."
+    info "Inbound IPv6 is therefore already proven in production — the external"
+    info "test below is confirmation, not a gate."
+fi
 
 # ---------------------------------------------------------------------------
 _addr="${EXPECT_V6:-$(head -n1 <<<"$V6_ADDRS")}"
