@@ -20,11 +20,28 @@
 #   3. DNS: an A record for ats.lopes.me pointing at this VPS, resolving
 #      BEFORE you run this, or Let's Encrypt validation fails.
 #
-# Usage
+# WHERE TO RUN THIS: on the VPS, over SSH, as root.
+#
+#   ssh root@179.237.107.22
+#   cd /opt/ats-mcp-src/server/deploy/infomaniak
 #   sudo ./deploy-ats-mcp.sh
-#   sudo ATS_HOST=ats.example.com ./deploy-ats-mcp.sh
+#
+#   sudo ATS_HOST=ats.example.com ./deploy-ats-mcp.sh   # different hostname
 
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# WHERE THIS RUNS: on the VPS, over SSH, as root.
+# Not on your Mac -- it inspects this host's own network stack and firewall.
+# ---------------------------------------------------------------------------
+if [ "$(uname -s)" = "Darwin" ]; then
+    printf '\033[1;31mxx\033[0m  This script runs ON THE VPS, not on macOS.\n\n' >&2
+    printf '    ssh root@179.237.107.22\n' >&2
+    printf '    cd /opt/ats-mcp-src/server/deploy/infomaniak && sudo %s\n\n' \
+        "$(basename "$0")" >&2
+    exit 2
+fi
+
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 ATS_HOST="${ATS_HOST:-ats.lopes.me}"

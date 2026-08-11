@@ -136,97 +136,128 @@ Ports on that host: `8420` obsidian-web-mcp · `5984` CouchDB · `61208` Glances
 · **`8430`** this. Nothing existing is modified — the vhost is a drop-in under
 `/etc/caddy/conf.d/`, the same pattern `deploy-monitoring.sh` uses.
 
-1. **DNS + IPv6.** Dual-stack is supported. Because Let's Encrypt resolves
-   AAAA first and does **not** fall back to IPv4 when the v6 challenge fails,
-   prove IPv6 ingress *before* publishing the AAAA — otherwise you get no
-   certificate at all and Caddy backs off, which reads as flaky rather than
-   misconfigured.
+**Every step below is labelled with where it runs.** Three places are involved
+and mixing them up is the main way this goes wrong:
 
-   ```bash
-   sudo git clone https://github.com/giuseppelopesme/Smart-ATS-Analyzer.git /opt/ats-mcp-src
-   cd /opt/ats-mcp-src/server/deploy/infomaniak
-   sudo EXPECT_V6=2001:1600:18:207::190 ./check-ipv6.sh
-   ```
+| Label | Means |
+|---|---|
+| 🖥️ **VPS** | in an SSH session on the VPS, as root |
+| 💻 **MAC** | a terminal on your own Mac — *not* the VPS |
+| 🌐 **BROWSER** | the Infomaniak Manager, on any device |
 
-   It is read-only and checks the whole local chain: global v6 address present
-   and matching, default v6 route, outbound v6, `IPV6=yes` in
-   `/etc/default/ufw` (without it the 80/443 rules are v4-only), and Caddy
-   listening on v6. Then it prints the one test it cannot run for you —
-   inbound reachability through the **Infomaniak panel firewall**, which is a
-   separate layer from `ufw` and the most likely blocker:
+---
 
-   ```bash
-   # from any IPv6-capable network — your Mac at home, or a phone on mobile data
-   curl -6 -sS -o /dev/null -w '%{http_code}\n' "http://[2001:1600:18:207::190]/"
-   ```
+### Step 1 — 🖥️ VPS · get the code onto the box
 
-   Any response — `200`, `308`, `404` — means inbound v6 reaches Caddy. A hang
-   or "Couldn't connect" means it is blocked; open 80/443 for IPv6 in the
-   Manager firewall and retest.
+```bash
+ssh root@179.237.107.22
 
-   Once that answers, add both records:
+sudo git clone https://github.com/giuseppelopesme/Smart-ATS-Analyzer.git /opt/ats-mcp-src
+cd /opt/ats-mcp-src/server/deploy/infomaniak
+```
 
-   | Type | Name | Target |
-   |---|---|---|
-   | `A` | `ats` | `179.237.107.22` |
-   | `AAAA` | `ats` | `2001:1600:18:207::190` |
+### Step 2 — 🖥️ VPS · check the IPv6 path (skip if you only want IPv4)
 
-   Ports 80/443 are already open for IPv4 from the Obsidian setup, so **no
-   IPv4 firewall change** — only IPv6 may need opening.
+```bash
+sudo EXPECT_V6=2001:1600:18:207::190 ./check-ipv6.sh
+```
 
-   The container stays published on `127.0.0.1:8430`. Caddy reaches it over
-   IPv4 loopback regardless of how the client arrived, so **Docker needs no
-   IPv6 configuration** — public dual-stack is entirely Caddy's business.
+Read-only; changes nothing. It verifies the local chain: a global v6 address
+matching the one you intend to publish, a default v6 route, outbound v6,
+`IPV6=yes` in `/etc/default/ufw` (without it your `allow 80/443` rules are
+IPv4-only — easy to miss), and Caddy listening on v6.
 
-   *Rollback if the certificate will not issue:* delete the AAAA record, then
-   `sudo systemctl restart caddy`. Caddy retries on IPv4 immediately rather
-   than waiting out its backoff.
+It refuses to run on macOS, because every check reads *this host's* stack.
 
-2. **Get the code onto the box**
+### Step 3 — 💻 MAC · prove inbound IPv6 from outside
 
-   ```bash
-   sudo git clone https://github.com/giuseppelopesme/Smart-ATS-Analyzer.git /opt/ats-mcp-src
-   ```
+This is the step that cannot be done on the VPS. The Infomaniak **panel**
+firewall is a separate layer from `ufw`, and it is the likeliest blocker —
+but run this on the server and the packet never leaves the box, bypassing
+both firewalls and answering even when inbound v6 is completely blocked. A
+false pass is worse than no test.
 
-3. **Deploy**
+```bash
+# On your Mac. Home Wi-Fi usually has IPv6; a phone on mobile data also works.
+curl -6 -sS -o /dev/null -w '%{http_code}\n' "http://[2001:1600:18:207::190]/"
+```
 
-   ```bash
-   cd /opt/ats-mcp-src/server/deploy/infomaniak
-   sudo ./deploy-ats-mcp.sh
-   ```
+Any response — `200`, `308`, `404` — means inbound IPv6 on port 80 reaches
+Caddy, which is what ACME needs. A hang or `Couldn't connect` means blocked:
+open 80/443 for IPv6 in the Manager firewall and retest.
 
-   It prompts once for a passphrase, stores only its scrypt hash in
-   `/etc/ats-mcp/ats-mcp.env` (0640 `root:obsidian`), builds the image, starts
-   the container on loopback, writes `/etc/caddy/conf.d/ats.caddy`, runs
-   `caddy validate` and reloads. It refuses to touch Caddy if the backend is
-   not answering, and refuses to start at all if the port belongs to something
-   that is not ours.
+No IPv6 on your network? Use <https://ipv6-test.com/validate.php> against the
+address instead.
 
-   Re-running is safe: it rebuilds and restarts, and never regenerates the
-   passphrase or drops OAuth state.
+### Step 4 — 🌐 BROWSER · add the DNS records
 
-4. **Connect** — Claude → Settings → Connectors → Add custom connector →
-   `https://ats.lopes.me/mcp`, Client ID/Secret blank (dynamic registration),
-   then sign in. Exactly the flow you used for `vault.lopes.me`.
+Infomaniak Manager → Domains → `lopes.me` → DNS:
 
-**Backups.** Deliberately not in the restic set. The only persisted state is
-registered OAuth clients and refresh tokens, in a Docker volume; losing it
-costs one sign-in. No CV is ever written to disk on the server.
+| Type | Name | Target |
+|---|---|---|
+| `A` | `ats` | `179.237.107.22` |
+| `AAAA` | `ats` | `2001:1600:18:207::190` — **only if step 3 answered** |
 
-**Updating**
+Ports 80/443 are already open for IPv4 from the Obsidian setup, so **no IPv4
+firewall change**. Only IPv6 may need opening.
 
+Wait for it to resolve before step 5 — 💻 MAC: `dig +short ats.lopes.me`.
+
+### Step 5 — 🖥️ VPS · deploy
+
+```bash
+cd /opt/ats-mcp-src/server/deploy/infomaniak
+sudo ./deploy-ats-mcp.sh
+```
+
+Prompts once for a passphrase, stores only its scrypt hash in
+`/etc/ats-mcp/ats-mcp.env` (0640 `root:obsidian`), builds the image, starts the
+container on loopback, writes `/etc/caddy/conf.d/ats.caddy`, runs `caddy
+validate` and reloads.
+
+It refuses to touch Caddy if the backend is not answering, refuses to start if
+the port belongs to something that is not ours, and aborts if the AAAA points
+at an address this host does not hold. Re-running is safe: it rebuilds and
+restarts without regenerating the passphrase or dropping OAuth state.
+
+### Step 6 — 🌐 BROWSER · connect Claude
+
+Claude → Settings → Connectors → Add custom connector →
+`https://ats.lopes.me/mcp`, Client ID/Secret **blank** (dynamic registration),
+then sign in with the passphrase from step 5. Same flow as `vault.lopes.me`.
+
+Do this once on any device; it applies to iPhone, iPad, Mac and web.
+
+---
+
+### Afterwards
+
+**Upload page** (💻 any device, in a browser): `https://ats.lopes.me/mcp/upload`
+— pick a CV from iCloud Drive, get a one-time id, paste it to Claude.
+
+**Logs** (🖥️ VPS): `docker logs ats-mcp -f`
+
+**Update** (🖥️ VPS):
 ```bash
 cd /opt/ats-mcp-src && sudo git pull
 cd server/deploy/infomaniak && sudo ./deploy-ats-mcp.sh
 ```
 
-**Removing it**
-
+**Remove** (🖥️ VPS):
 ```bash
 cd /opt/ats-mcp-src/server/deploy/infomaniak && sudo docker compose down -v
 sudo rm /etc/caddy/conf.d/ats.caddy && sudo systemctl reload caddy
 sudo rm -rf /etc/ats-mcp
 ```
+
+**If the certificate will not issue** (🖥️ VPS): drop the AAAA record in the
+Manager, then `sudo systemctl restart caddy` — the restart retries on IPv4
+immediately instead of waiting out Caddy's backoff. Watch with
+`sudo journalctl -u caddy -f`.
+
+**Backups.** Deliberately not in the restic set. The only persisted state is
+registered OAuth clients and refresh tokens, in a Docker volume; losing it
+costs one sign-in. No CV is ever written to disk on the server.
 
 ---
 

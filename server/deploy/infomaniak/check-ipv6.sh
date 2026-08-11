@@ -10,11 +10,28 @@
 # So: run this on the VPS, do the one external test it prints, and only then
 # add the AAAA record.
 #
-#   sudo ./check-ipv6.sh
+# WHERE TO RUN THIS: on the VPS, over SSH, as root.
+#
+#   ssh root@179.237.107.22
+#   cd /opt/ats-mcp-src/server/deploy/infomaniak
+#   sudo EXPECT_V6=2001:1600:18:207::190 ./check-ipv6.sh
 #
 # Everything here is read-only. It changes nothing.
 
 set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# WHERE THIS RUNS: on the VPS, over SSH, as root.
+# Not on your Mac -- it inspects this host's own network stack and firewall.
+# ---------------------------------------------------------------------------
+if [ "$(uname -s)" = "Darwin" ]; then
+    printf '\033[1;31mxx\033[0m  This script runs ON THE VPS, not on macOS.\n\n' >&2
+    printf '    ssh root@179.237.107.22\n' >&2
+    printf '    cd /opt/ats-mcp-src/server/deploy/infomaniak && sudo %s\n\n' \
+        "$(basename "$0")" >&2
+    exit 2
+fi
+
 
 EXPECT_V6="${EXPECT_V6:-}"
 HOSTS_TO_COMPARE="${HOSTS_TO_COMPARE:-vault.lopes.me couch.lopes.me status.lopes.me}"
@@ -115,6 +132,9 @@ done
 
 # ---------------------------------------------------------------------------
 _addr="${EXPECT_V6:-$(head -n1 <<<"$V6_ADDRS")}"
+# cat prints \033 literally, so the escapes have to be real characters by the
+# time the heredoc is expanded.
+_HL="$(printf '\033[1;33m')"; _RS="$(printf '\033[0m')"
 printf '\n\033[1m%s\033[0m\n' "7. The one test this script CANNOT do for you"
 cat <<EOF
 
@@ -122,8 +142,13 @@ cat <<EOF
   permits inbound IPv6 — that is a separate layer from ufw, and it is the most
   likely thing to be blocking you.
 
-  From a machine on an IPv6-capable network (your Mac on most home networks,
-  or a phone on mobile data), run:
+  ${_HL}>>> RUN THE NEXT COMMAND ON YOUR MAC, NOT ON THIS SERVER. <<<${_RS}
+
+  Run it here and the packet never leaves the box: it bypasses both firewalls
+  and answers even when inbound IPv6 is completely blocked. A false pass is
+  worse than no test.
+
+  On your Mac (or a phone on mobile data — anything with IPv6):
 
       curl -6 -sS -o /dev/null -w '%{http_code}\\n' \\
           "http://[${_addr:-YOUR_V6_ADDR}]/"
