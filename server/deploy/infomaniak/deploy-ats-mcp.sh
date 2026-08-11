@@ -86,6 +86,28 @@ else
     log "DNS OK — $ATS_HOST → $_resolved"
 fi
 
+# An AAAA record is worth flagging loudly. Let's Encrypt PREFERS IPv6 when one
+# exists and does not fall back to IPv4 on failure, so publishing AAAA for a
+# host whose v6 inbound is not actually open means no certificate at all --
+# and Caddy then backs off, which makes it look intermittent rather than
+# misconfigured.
+_v6="$(getent ahostsv6 "$ATS_HOST" 2>/dev/null | awk 'NR==1{print $1}' || echo '')"
+if [ -n "$_v6" ]; then
+    warn "$ATS_HOST has an AAAA record ($_v6)."
+    warn "Let's Encrypt will try IPv6 FIRST and will not fall back to IPv4."
+    _siblings_have_v6=""
+    for _h in vault.lopes.me couch.lopes.me status.lopes.me; do
+        if [ -n "$(getent ahostsv6 "$_h" 2>/dev/null | awk 'NR==1{print $1}')" ]; then
+            _siblings_have_v6=1
+        fi
+    done
+    if [ -z "$_siblings_have_v6" ]; then
+        warn "None of the working hosts on this box publish AAAA, so IPv6 ingress"
+        warn "here is unproven. Unless you have confirmed inbound 443 over IPv6"
+        warn "reaches Caddy, remove the AAAA record and use A only."
+    fi
+fi
+
 # ----------------------------------------------------------------------------
 # 3. Environment file — passphrase hash generated once, never overwritten
 # ----------------------------------------------------------------------------

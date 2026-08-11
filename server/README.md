@@ -136,9 +136,25 @@ Ports on that host: `8420` obsidian-web-mcp · `5984` CouchDB · `61208` Glances
 · **`8430`** this. Nothing existing is modified — the vhost is a drop-in under
 `/etc/caddy/conf.d/`, the same pattern `deploy-monitoring.sh` uses.
 
-1. **DNS** — add an A record for `ats.lopes.me` pointing at the VPS, and let it
-   resolve before step 3. Port 80 and 443 are already open from the Obsidian
-   setup, so nothing changes in the Infomaniak firewall.
+1. **DNS** — one record, in the Infomaniak Manager (Domains → `lopes.me` → DNS):
+
+   | Type | Name | Target |
+   |---|---|---|
+   | `A` | `ats` | the same IPv4 as `vault.lopes.me` |
+
+   **A only — do not add AAAA.** Let's Encrypt prefers IPv6 when an AAAA
+   record exists and does *not* fall back to IPv4 if the challenge fails
+   there, so publishing AAAA for a host whose v6 ingress is unproven means no
+   certificate at all, and Caddy then backs off in a way that looks
+   intermittent rather than misconfigured. `vault.lopes.me`,
+   `couch.lopes.me` and `status.lopes.me` are all A-only, so IPv6 on this box
+   is untested. Add AAAA later if you want it, but prove inbound 443 over IPv6
+   reaches Caddy first — and add it to `vault.lopes.me` at the same time.
+
+   Wait for it to resolve before step 3; the script checks and warns.
+
+   Ports 80 and 443 are already open in the Infomaniak panel firewall and in
+   `ufw` from the Obsidian setup. Same IP, same ports — **no firewall change.**
 
 2. **Get the code onto the box**
 
