@@ -116,6 +116,16 @@ The hash therefore lives in `/etc/ats-mcp/password.hash`, mounted read-only at
 `/run/secrets/ats-password-hash`, with `ATS_OAUTH_PASSWORD_HASH_FILE` pointing
 at it. A file also keeps the hash out of `docker inspect` and `/proc/*/environ`.
 
+Two things about that mounted file, both of which broke a real deploy:
+
+- It must **exist on the host before the container starts**. Docker creates a
+  directory when a bind-mount source is missing, and the container then dies
+  trying to read it. The deploy script guarantees the file and removes any
+  directory a previous run left.
+- It must be readable **by uid 10001**, the user inside the container. The
+  obvious `root:obsidian 0640` is not — the container is neither. The script
+  sets `10001:10001 0400`, which is also tighter than what it replaces.
+
 The server now **validates the hash at start-up** and refuses to boot on a
 malformed one, naming this trap in the error. Two other half-configured states
 also abort rather than silently running unauthenticated: a public URL with no

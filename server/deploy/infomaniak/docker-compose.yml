@@ -38,6 +38,10 @@ services:
     # signing in again, so it is deliberately not in the restic set.
     volumes:
       - ats-mcp-state:/var/lib/ats-mcp
+      # Bind-mounted, so the file MUST exist on the host first — Docker
+      # silently creates a directory otherwise and the container dies reading
+      # it. deploy-ats-mcp.sh guarantees the file and chowns it to uid 10001,
+      # the user this container runs as; root:obsidian 0640 is unreadable here.
       - /etc/ats-mcp/password.hash:/run/secrets/ats-password-hash:ro
 
     # The process writes nothing outside the state volume and /tmp.

@@ -61,6 +61,23 @@ def _build_auth() -> tuple:
         try:
             with open(hash_file, "r", encoding="utf-8") as fh:
                 password_hash = fh.read().strip()
+        except IsADirectoryError as exc:
+            print(f"error: {hash_file} is a DIRECTORY, not a file.\n"
+                  "       Docker creates an empty directory when a bind-mount\n"
+                  "       source does not exist on the host. Remove it, make sure\n"
+                  "       /etc/ats-mcp/password.hash exists, and redeploy:\n"
+                  "         sudo rm -rf /etc/ats-mcp/password.hash\n"
+                  "         cd /opt/ats-mcp-src/server/deploy/infomaniak\n"
+                  "         sudo ./deploy-ats-mcp.sh", file=sys.stderr)
+            raise SystemExit(2) from exc
+        except PermissionError as exc:
+            print(f"error: cannot read {hash_file}: permission denied.\n"
+                  f"       This process runs as uid {os.getuid()}, so the file must\n"
+                  "       be readable by it. On the host:\n"
+                  "         sudo chown 10001:10001 /etc/ats-mcp/password.hash\n"
+                  "         sudo chmod 400 /etc/ats-mcp/password.hash\n"
+                  "       Or just redeploy, which now does this.", file=sys.stderr)
+            raise SystemExit(2) from exc
         except OSError as exc:
             print(f"error: cannot read ATS_OAUTH_PASSWORD_HASH_FILE ({hash_file}): "
                   f"{exc}", file=sys.stderr)

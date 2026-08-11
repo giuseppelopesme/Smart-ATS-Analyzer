@@ -54,6 +54,10 @@ CONF_D="/etc/caddy/conf.d"
 CADDYFILE="/etc/caddy/Caddyfile"
 IMPORT_LINE="import ${CONF_D}/*.caddy"
 COMPOSE_DIR="${REPO_ROOT}/server/deploy/infomaniak"
+# The container runs as this uid (see server/deploy/Dockerfile). The hash file
+# is bind-mounted in and read by that user, so host ownership must match --
+# root:obsidian 0640 is unreadable to it and the container exits at start-up.
+CONTAINER_UID="${CONTAINER_UID:-10001}"
 
 log()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
@@ -210,14 +214,31 @@ else
 fi
 chown "root:${DEPLOY_USER}" "$ENV_FILE"
 chmod 640 "$ENV_FILE"
+
+# If a previous run let Docker create the bind-mount source, it is a directory.
+if [ -d "$HASH_FILE" ]; then
+    log "Removing the empty directory Docker created at $HASH_FILE"
+    rmdir "$HASH_FILE" 2>/dev/null || rm -rf "$HASH_FILE"
+fi
+
 if [ -f "$HASH_FILE" ]; then
-    chown "root:${DEPLOY_USER}" "$HASH_FILE"
-    chmod 640 "$HASH_FILE"
+    # Owned by the container uid, not by root:$DEPLOY_USER: the reader is the
+    # process inside the container. 0400 means nothing else on the host can
+    # read it either, which is tighter than what it replaces.
+    chown "${CONTAINER_UID}:${CONTAINER_UID}" "$HASH_FILE"
+    chmod 400 "$HASH_FILE"
     # Catch the truncation before the container does, whatever wrote it.
     if [ "$(tr -cd '$' < "$HASH_FILE" | wc -c)" -ne 2 ]; then
         die "$HASH_FILE is not a valid scrypt\$salt\$digest hash.
      Delete $ENV_FILE and $HASH_FILE, then re-run to set a new passphrase."
     fi
+fi
+
+# The bind mount must have a real file to point at. Without one Docker silently
+# creates a directory, and the container then fails to start reading it.
+if [ ! -f "$HASH_FILE" ]; then
+    die "$HASH_FILE is missing, so the container cannot be given a passphrase.
+     Delete $ENV_FILE and re-run this script to set one."
 fi
 
 # ----------------------------------------------------------------------------
@@ -241,7 +262,8 @@ for _i in $(seq 1 20); do
 done
 if [ -z "$_ok" ]; then
     warn "The container is not serving OAuth discovery on 127.0.0.1:${ATS_PORT}."
-    warn "Logs:  docker logs ats-mcp --tail 40"
+    warn "Its own last words:"
+    docker logs ats-mcp --tail 20 2>&1 | sed 's/^/       /' >&2
     die  "Not touching Caddy while the backend is down."
 fi
 log "Backend is up and serving OAuth discovery"
