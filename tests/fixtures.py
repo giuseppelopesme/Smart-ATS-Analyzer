@@ -222,3 +222,60 @@ def scanned_pdf():
            b"stream\n\xff\xd8\xff\xe0fakejpg\n\nendstream",
     }
     return build(objs, 1)
+
+
+def multi_page_text_pdf(text, compress=True, font_size=10, leading=13,
+                        top=780, bottom=52, left=60, wrap=95):
+    """Lay plain text out over as many pages as it needs.
+
+    Needed for round-trip tests: a two-page CV crammed onto one page has
+    overlapping baselines, which scrambles line grouping and makes the
+    extraction differ from the source for reasons that have nothing to do
+    with the code under test.
+    """
+    pages, cur, y = [], [], top
+    for raw in text.split("\n"):
+        chunks = []
+        line = raw
+        while len(line) > wrap:
+            cut = line.rfind(" ", 0, wrap)
+            cut = cut if cut > 0 else wrap
+            chunks.append(line[:cut])
+            line = line[cut + 1:]
+        chunks.append(line)
+        for chunk in chunks:
+            if y < bottom:
+                pages.append(cur)
+                cur, y = [], top
+            cur.append((left, y, font_size, chunk))
+            y -= leading
+    if cur:
+        pages.append(cur)
+
+    objs = {1: b"", 2: b""}
+    kids, next_num = [], 3
+    page_nums = []
+    for page_lines in pages:
+        ops = [b"BT"]
+        for x, yy, size, t in page_lines:
+            ops.append(f"/F1 {size} Tf 1 0 0 1 {x} {yy} Tm ({_esc(t)}) Tj".encode())
+        ops.append(b"ET")
+        content_num = next_num + 1
+        objs[next_num] = (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 " + str(9999).encode() + b" 0 R >> >> "
+            b"/Contents " + str(content_num).encode() + b" 0 R >>")
+        objs[content_num] = content_stream(b"\n".join(ops), compress)
+        page_nums.append(next_num)
+        kids.append(f"{next_num} 0 R".encode())
+        next_num += 2
+
+    font_num = next_num
+    for n in page_nums:
+        objs[n] = objs[n].replace(b"9999 0 R", f"{font_num} 0 R".encode())
+    objs[font_num] = (b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+                      b"/Encoding /WinAnsiEncoding >>")
+    objs[1] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    objs[2] = (b"<< /Type /Pages /Kids [" + b" ".join(kids) +
+               b"] /Count " + str(len(kids)).encode() + b" >>")
+    return build(objs, 1, use_xref_stream=True)

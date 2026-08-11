@@ -1,0 +1,13 @@
+{
+  "_comment": [
+    "Copy to spec.local.json (gitignored) to pin personal values the public spec",
+    "only checks the shape of. Merged over canonical_spec.json automatically.",
+    "Anything omitted keeps the shape-only check."
+  ],
+  "metadata": { "author": "Your Name" },
+  "expected": {
+    "name": "Your Name",
+    "contact_line": "City, Country | +00 000 000 0000 | you@example.com",
+    "languages_line": "Italian (Native) | English (Proficient, C2)"
+  }
+}

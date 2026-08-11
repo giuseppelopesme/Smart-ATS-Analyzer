@@ -356,13 +356,143 @@ def test_robustness(tmp: str) -> None:
     check("plain text loads", ex.kind == "text" and "Giuseppe" in ex.text)
 
 
+def test_validator(tmp: str) -> None:
+    section("Canonical structure validator")
+    import copy
+
+    import docx_fixtures as DF
+    import validate as V
+    from docx_inspect import DocxError, inspect_docx
+
+    spec = V.load_spec()
+
+    good = DF.build_docx(os.path.join(tmp, "good.docx"))
+    model = inspect_docx(good)
+    checks = V.validate_structure(model, spec)
+    fails = {c.id for c in checks if c.ok is False}
+    check("canonical docx passes every structure check", not fails, str(sorted(fails)))
+    check("canonical docx scores 100", V.score(checks) == 100, str(V.score(checks)))
+
+    broken = DF.build_broken_docx(os.path.join(tmp, "broken.docx"))
+    bmodel = inspect_docx(broken)
+    bfails = {c.id for c in V.validate_structure(bmodel, spec) if c.ok is False}
+    for cid, why in [
+        ("page.margins", "wrong margins"),
+        ("page.columns", "two columns"),
+        ("no.tables", "layout table"),
+        ("no.images", "inline image"),
+        ("no.header", "text in the Word header"),
+        ("bullets.real", "typed bullet glyphs"),
+        ("header.name", "name not 18pt bold"),
+        ("header.contact", "malformed contact line"),
+        ("header.linkedin", "LinkedIn not a hyperlink"),
+        ("sections.present", "missing sections"),
+        ("sections.order", "EDUCATION after LANGUAGES"),
+        ("sections.formatting", "heading without a bottom rule"),
+        ("summary.shape", "summary not 3 paragraphs"),
+        ("achievements.count", "wrong bullet count"),
+        ("achievements.quantified", "unquantified achievement"),
+        ("experience.roles", "malformed company/date line"),
+        ("meta.author", "empty author"),
+        ("meta.title", "title not 'Name - Role - CV'"),
+    ]:
+        check(f"broken docx flags {cid} ({why})", cid in bfails, str(sorted(bfails)))
+
+    # A check with nothing to inspect must skip, never silently pass.
+    bchecks = {c.id: c for c in V.validate_structure(bmodel, spec)}
+    check("company_format skips when no company lines were found",
+          bchecks["experience.company_format"].ok is None,
+          str(bchecks["experience.company_format"].ok))
+
+    # ---- round trip ------------------------------------------------------
+    pdf_path = os.path.join(tmp, "ats.pdf")
+    with open(pdf_path, "wb") as fh:
+        fh.write(fixtures.multi_page_text_pdf(DF.plain_text()))
+    pdf = load_any(pdf_path)
+    cmp_ = V.compare_text(DF.plain_text(), pdf.text)
+    check("docx/PDF round trip is exact", cmp_["similarity"] >= 0.99,
+          str(cmp_["similarity"]))
+    check("round-trip PDF paginates to 2 pages", len(pdf.pages) == 2, str(len(pdf.pages)))
+
+    other = load_any(os.path.join(tmp, "twocol.pdf")) if os.path.exists(
+        os.path.join(tmp, "twocol.pdf")) else None
+    if other is not None:
+        cmp_bad = V.compare_text(DF.plain_text(), other.text)
+        check("round trip detects a mismatched PDF", cmp_bad["similarity"] < 0.5,
+              str(cmp_bad["similarity"]))
+
+    # ---- content parity ---------------------------------------------------
+    orig = copy.deepcopy(DF.ROLES)
+    try:
+        DF.ROLES[1] = (DF.ROLES[1][0], DF.ROLES[1][1], DF.ROLES[1][2][:-1])
+        short = DF.build_docx(os.path.join(tmp, "short.docx"))
+    finally:
+        DF.ROLES[:] = orig
+    design_full = DF.plain_text()
+
+    blocks = V.compare_blocks(design_full, inspect_docx(short).text)
+    check("dropped bullet is detected as a missing block",
+          blocks["missing_count"] >= 1, str(blocks["missing_count"]))
+    check("missing block names the dropped text",
+          any("governance board" in b["text"] for b in blocks["missing_blocks"]),
+          str(blocks["missing_blocks"][:2]))
+
+    blocks_ok = V.compare_blocks(design_full, inspect_docx(good).text)
+    check("complete build reports no missing blocks",
+          blocks_ok["missing_count"] == 0, str(blocks_ok["missing_blocks"][:3]))
+
+    # Reordering alone must not count as dropped content.
+    shuffled = "\n".join(reversed(design_full.split("\n")))
+    blocks_shuf = V.compare_blocks(shuffled, inspect_docx(good).text)
+    check("reordering is not treated as missing content",
+          blocks_shuf["missing_count"] == 0, str(blocks_shuf["missing_count"]))
+
+    cov = V.compare_coverage(design_full, inspect_docx(good).text)
+    check("coverage is 1.0 for an identical build", cov["coverage"] >= 0.999,
+          str(cov["coverage"]))
+
+    # ---- CLI ---------------------------------------------------------------
+    import subprocess
+
+    script = os.path.join(ROOT, ".claude", "skills", "ats-check", "scripts", "ats_validate.py")
+    r = subprocess.run([sys.executable, script, good, "--pdf", pdf_path, "--json"],
+                       capture_output=True, text=True, timeout=120)
+    check("validator CLI exits 0 on a clean build", r.returncode == 0, r.stderr[:200])
+    try:
+        import json as _json
+        data = _json.loads(r.stdout)
+        check("validator JSON has a verdict",
+              data["validation"]["passed"] is True, str(data["validation"]["counts"]))
+        check("validator JSON scores 100", data["validation"]["score"] == 100,
+              str(data["validation"]["score"]))
+    except (ValueError, KeyError) as exc:
+        check("validator JSON has a verdict", False, str(exc))
+
+    r = subprocess.run([sys.executable, script, broken], capture_output=True,
+                       text=True, timeout=120)
+    check("validator CLI exits 1 on a failing build", r.returncode == 1, str(r.returncode))
+
+    notdocx = os.path.join(tmp, "nope.docx")
+    with open(notdocx, "wb") as fh:
+        fh.write(b"not a zip at all")
+    r = subprocess.run([sys.executable, script, notdocx], capture_output=True,
+                       text=True, timeout=120)
+    check("validator CLI exits 2 on unreadable input", r.returncode == 2, str(r.returncode))
+    try:
+        inspect_docx(notdocx)
+        check("inspect_docx raises on non-docx", False, "no exception")
+    except DocxError:
+        check("inspect_docx raises on non-docx", True)
+
+
 def main() -> int:
     import tempfile
 
     print("ats-check test suite")
     with tempfile.TemporaryDirectory() as tmp:
         for fn in (test_pdf_structures, test_fonts, test_layout, test_lint,
-                   test_docx, test_matching, test_cli, test_robustness):
+                   test_docx, test_matching, test_cli, test_robustness,
+                   test_validator):
             try:
                 fn(tmp)
             except Exception as exc:  # noqa: BLE001

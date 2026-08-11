@@ -1,149 +1,179 @@
-# Smart ATS Analyzer — as a Claude Skill
+# ATS validator + checker — a Claude Skill
 
-Check a resume against an Applicant Tracking System **without a browser, without
-an API key, and without a Streamlit app running somewhere**.
+Two things, one skill, no browser and no API key:
 
-This is a rebuild of the Streamlit + Gemini "Smart ATS Analyzer" idea as a
-[Claude Skill](https://claude.ai/skills). The difference matters:
+1. **Validate** an ATS CV deliverable against a canonical structure — the gate
+   that runs before a tailored CV is archived or submitted.
+2. **Review** any resume for parseability and job-description fit.
 
-|  | Streamlit app | This skill |
-|---|---|---|
-| Needs a browser | yes | no |
-| Needs a Google Gemini API key | yes | no |
-| Needs a server running | yes | no |
-| Works from an iOS phone | only via the web UI | yes, in the Claude app |
-| Cost | Gemini API usage | included in your Claude plan |
-| Parseability analysis | none — sends raw text to an LLM | real PDF/DOCX inspection |
+Everything is **standard library only** — no `pip install`, no network — so the
+scripts run unchanged in a sandbox, on a Mac, or in CI.
 
-The LLM in the loop is Claude itself, so there is no second model to pay for.
-The analysis scripts are **standard library only** — no `pip install`, no
-network — so they run in the Claude sandbox as-is.
+## Mode 1 — Validate (the gate)
 
-## What it actually checks
+```bash
+python3 .claude/skills/ats-check/scripts/ats_validate.py CV.docx \
+    --pdf CV.pdf --design CV_Design.pdf --jd jd.txt
+```
 
-Two separate questions, in order:
+```
+# ATS validation — CV.docx
 
-**1. Can the machine read the file at all?** Measured, not guessed:
+**PASS · 100/100** · 42 passed, 0 failed, 0 skipped · 738 words
+```
 
-- text layer present, or is this a scan pretending to be a document
-- fonts with no `ToUnicode` map — the page looks perfect and extracts as `���`
-- multi-column layouts, detected geometrically, plus a diff between
-  column-aware and stream-order extraction to show what actually gets scrambled
+42 checks against `references/canonical_spec.json`:
+
+| Group | Checks |
+|---|---|
+| Page setup | A4, margins, single column |
+| Forbidden | tables, text boxes, images, header text, footer text |
+| Bullets | real Word numbering definitions, not typed glyphs; one level only |
+| Typography | Calibri throughout; name 18pt bold; headline 12pt gray; headings 12pt bold caps with a paragraph bottom rule; job titles 11pt bold; company/date 10pt italic; body 10pt |
+| Structure | all canonical sections, in order; 3 summary paragraphs; 3 pipe-separated competency lines; 4 quantified achievements; 4–5 bullets per role; reverse chronological; `Title, Company (YYYY - YYYY)` line shapes |
+| Metadata | author set; title in `Name - Role - CV` form |
+| Round trip | the PDF's text matches the docx |
+| Content parity | every block of the Canva design export survives into the ATS build |
+| Keywords | JD required terms and hard gates |
+
+**A check that cannot run reports `skip`, never `pass`.** Validating with only
+the docx is not a green light for the PDF.
+
+Exit status `0` / `1` / `2` — pass / fail / could not run, so it drops into a
+script or a pre-archive hook.
+
+### Two checks worth explaining
+
+**Content parity is block-level, not a word-count ratio.** A word ratio is too
+blunt: an entire bullet can vanish from a 750-word CV and still leave ~98% of
+the words, which sails past any sane threshold. Each block of the design is
+matched against its best counterpart anywhere in the ATS build, so a dropped
+bullet is named exactly:
+
+```
+❌ ATS build carries the design's full content   parity.design
+2 block(s) of the design have no counterpart in the ATS build:
+"Chaired the internal AI governance board covering model risk, validation and the";
+"required for supervisory review."
+```
+
+Matching is order-insensitive on purpose — a two-column Canva export always
+extracts scrambled, so comparing sequences would fail every time and tell you
+nothing.
+
+**Bullets.** Typed `•` and a real numbering definition look identical on screen
+and parse completely differently. The validator reads `w:numPr`, so it can tell.
+
+### Personal values stay out of git
+
+The committed spec checks the *shape* of the contact line
+(`City, Country | +phone | email`) and that an author is set — not literal
+values, because this repo is public. Copy
+`references/spec.local.example.json` → `spec.local.json` (gitignored) to pin
+exact strings; it is merged automatically.
+
+## Mode 2 — Review (any resume)
+
+```bash
+python3 .claude/skills/ats-check/scripts/ats_check.py resume.pdf --jd jd.txt
+python3 .claude/skills/ats-check/scripts/ats_check.py resume.pdf --text-only
+```
+
+Parseability first — a resume that extracts as garbage scores zero against every
+job:
+
+- scans and image-only pages
+- fonts with no `ToUnicode` map: the page looks perfect and extracts as `���`
+- multi-column layouts, detected geometrically
 - contact details stranded in a Word header, a PDF header band, or a `mailto:`
-  link annotation
-- DOCX text boxes and layout tables
-- non-standard section headings, unparseable dates, icon-font glyphs
-- invisible text and keyword stuffing
-- encryption
+  annotation
+- DOCX text boxes and layout tables, non-standard headings, unparseable dates
+- hidden text and keyword stuffing
 
-**2. Does the content match the job?** Requirement terms weighted by JD
-section, alias-aware matching (`K8s` satisfies `Kubernetes`), hard gates
-(years, degree, language), and skills claimed in a list with no bullet
-behind them.
+Then JD fit: requirement terms weighted by section, alias-aware (`K8s` satisfies
+`Kubernetes`), hard gates, and skills listed with nothing behind them.
 
-The scripts report **evidence**. Claude reads that evidence, reads the
-extracted text, and gives the verdict. There is deliberately no invented
-"your ATS score is 72%" — see `references/ats-parseability.md` for why that
-number is always fiction.
-
-## Use it from your phone (no Claude Code needed)
-
-```bash
-python3 tools/package_skill.py     # -> dist/ats-check.zip
-```
-
-Then in **claude.ai → Settings → Capabilities → Skills → Upload skill**, upload
-`dist/ats-check.zip`. Enable code execution.
-
-From then on, in the Claude iOS app: attach your resume, paste a job ad, and
-say *"check this against ATS"*. It runs server-side in the background. No
-browser, no repo, no laptop.
-
-## Use it from this repo
-
-Any Claude Code session opened on this repository picks the skill up
-automatically from `.claude/skills/ats-check/`.
+`--text-only --stream-order` shows the raw content-stream read. On a two-column
+resume it differs dramatically from the layout-aware read, which is the clearest
+possible demonstration of why one column matters:
 
 ```
-You: check resumes/cv.pdf against the job description in jd/backend.txt
-```
-
-## Use the CLI directly
-
-No Claude involved — just the deterministic half:
-
-```bash
-python3 .claude/skills/ats-check/scripts/ats_check.py resumes/cv.pdf --jd jd/role.txt
-python3 .claude/skills/ats-check/scripts/ats_check.py resumes/cv.pdf --json
-python3 .claude/skills/ats-check/scripts/ats_check.py resumes/cv.pdf --text-only
-```
-
-`--text-only` prints exactly what an ATS extracts. Reading that output is the
-single most useful thing in this repo — if it looks wrong to you, it is wrong.
-
-Add `--stream-order` to see the raw content-stream read, which is what a naive
-parser gets. On a two-column resume the two differ dramatically:
-
-```
-$ ats_check.py twocol.pdf --text-only --stream-order
 EXPERIENCE SKILLS
 Senior Backend Engineer Python
 Acme Corp 2020-2024 Kubernetes
 ```
 
+## Use it from your phone
+
+```bash
+python3 tools/package_skill.py     # -> dist/ats-check.zip
+```
+
+Upload at **claude.ai → Settings → Capabilities → Skills**, enable code
+execution. Then attach a CV in the Claude iOS app and ask for a check — it runs
+server-side, no browser, no laptop.
+
+The packager refuses to build if `SKILL.md` frontmatter is malformed, a script
+fails to compile, or anything imports a third-party module.
+
 ## Layout
 
 ```
 .claude/skills/ats-check/
-  SKILL.md                     instructions Claude follows
+  SKILL.md
   scripts/
-    pdfmini.py                 dependency-free PDF parser
-    layout.py                  line grouping, column detection, reading order
-    readers.py                 PDF / DOCX / TXT / MD / RTF -> one shape
-    ats_lint.py                parseability checks
-    jd_match.py                job-description overlap and hard gates
-    ats_check.py               CLI entry point
+    pdfmini.py          dependency-free PDF parser
+    layout.py           line grouping, column detection, reading order
+    readers.py          PDF / DOCX / TXT / MD / RTF -> one shape
+    docx_inspect.py     DOCX formatting: fonts, sizes, numbering, borders, sectPr
+    validate.py         canonical-structure checks + text comparison
+    ats_lint.py         parseability findings
+    jd_match.py         JD overlap and hard gates
+    ats_validate.py     CLI — the gate
+    ats_check.py        CLI — the review
   references/
-    ats-parseability.md        why each check exists
-    aliases.json               synonym table (extend it freely)
-tests/test_ats.py              56 tests, no fixtures on disk
-tools/package_skill.py         build + validate the uploadable zip
-resumes/                       gitignored — put your resume here
+    canonical_spec.json      the structure the gate enforces (editable data)
+    spec.local.example.json  template for pinning personal values
+    ats-parseability.md      why each parseability check exists
+    aliases.json             synonym table
+tests/test_ats.py       91 tests, no sample files on disk
+tools/package_skill.py  build + validate the uploadable zip
 ```
 
-### Why a hand-written PDF parser
+### Why hand-written parsers
 
-`pypdf` and friends are not installable in the claude.ai sandbox, which has no
-network. Rather than degrade to "upload a .txt", `scripts/pdfmini.py`
-implements what is needed directly: xref tables and xref streams, object
-streams, Flate/LZW/ASCII85/ASCIIHex with PNG predictors, `ToUnicode` CMaps,
-form XObject recursion, and xref reconstruction by scanning when the table is
-corrupt.
+`pypdf` and `python-docx` are not installable in a sandbox with no network. So
+`pdfmini.py` implements what is needed directly — xref tables and xref streams,
+object streams, Flate/LZW/ASCII85/ASCIIHex with PNG predictors, `ToUnicode`
+CMaps, form XObject recursion, and xref reconstruction by scanning — and
+`docx_inspect.py` resolves run properties the way Word does: direct `rPr`, then
+the paragraph style up its `basedOn` chain, then `docDefaults`. Reading only
+direct properties reports "no font set" on a document that renders perfectly.
 
-It also exposes something general-purpose libraries mostly hide: the **position
+`pdfmini` also exposes something general-purpose libraries hide: the **position
 of every show-text operation**. Column detection and the naive-vs-layout diff
-are built on that, and those are the checks that catch the failure most
-resume templates actually have.
+are built on that.
 
 ## Tests
 
 ```bash
-python3 tests/test_ats.py
+python3 tests/test_ats.py     # 91 passed, 0 failed
 ```
 
-Every PDF is constructed byte by byte in `tests/fixtures.py`, so the suite
-needs no sample files and can exercise structures a normal generator will not
-produce — CID fonts with no `ToUnicode`, deliberately corrupted xref offsets,
-image-only pages.
+Every PDF and DOCX is constructed byte by byte in `tests/fixtures.py` and
+`tests/docx_fixtures.py`, so the suite needs no sample files and can exercise
+structures a normal generator will not emit: CID fonts with no `ToUnicode`,
+corrupted xref offsets, image-only pages, and a deliberately broken CV that
+trips 18 named checks at once.
 
 ## Privacy
 
-Resumes are personal data. `resumes/`, `reports/` and `jd/` are gitignored,
-this repository is public, and the analysis runs locally in the session —
-nothing is sent to a third-party API.
+No resume, job ad or report is stored in this repository — it holds the analyser
+only. Documents stay wherever your own workflow keeps them, and the analysis
+runs locally in the session.
 
 ## Credit
 
 The original [Smart ATS Analyzer](https://github.com/Anubhx/Smart-ATS-Analyzer)
-by Anubhav Raj (Streamlit + Gemini Pro) is the idea this reimplements. No code
-is shared with it; the approach here is deliberately different.
+by Anubhav Raj (Streamlit + Gemini Pro) is the idea this started from. No code
+is shared with it.

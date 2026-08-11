@@ -1,132 +1,125 @@
 ---
 name: ats-check
-description: Check a resume or CV against an Applicant Tracking System, with or without a job description. Use when the user asks whether their resume will pass ATS screening, wants a resume scored or matched against a job posting or job ad, asks about keyword gaps, asks why they are not getting interviews, wants a CV reviewed or tailored for a specific role, or uploads a resume file (PDF/DOCX) in a job-application context. Runs fully offline with no API key and no browser.
+description: Validate ATS CV deliverables against a canonical structure, and check any resume against an Applicant Tracking System. Use before archiving or submitting a tailored CV, to verify an ATS .docx and its PDF are bulletproof, to confirm the ATS build carries 100% of the design's content, to run the machine-parse round trip, or when asked whether a resume will pass ATS screening, how it scores against a job description, or what keywords it is missing. Runs offline, no API key, no browser.
 ---
 
-# ATS resume check
+# ATS check
 
-Predict what an Applicant Tracking System does to a resume, and say what to
-change. Two independent questions, always answered in this order:
+Two modes. Pick by what you are given.
 
-1. **Can the machine read the file at all?** Layout, fonts, encoding, contact
-   details. A resume that extracts as garbage scores zero against every job.
-2. **Does the content match the job?** Keyword and requirement overlap, hard
-   gates, unsupported claims.
+| You have | Mode | Command |
+|---|---|---|
+| An ATS `.docx` built to the canonical structure | **Validate** — the pre-archive gate | `ats_validate.py` |
+| Any resume, or a resume plus a job ad | **Review** — parseability and JD fit | `ats_check.py` |
 
-Question 1 is measurable, and `ats_check.py` measures it. Question 2 is a
-judgement call, and that is your job. **The script reports evidence; you
-report the verdict.** Never paste the script's coverage percentage as if it
-were a score of the candidate — it is lexical overlap, nothing more.
+Both are standard library only: no install, no network, no API key.
 
-## Workflow
+---
 
-### 1. Locate the resume
+## Mode 1 — Validate (the gate)
 
-Look in this order and use the first hit:
+This runs **before a tailored CV is archived or submitted**. It is the
+"bulletproof check" step: nothing gets archived until it passes.
 
-- a file the user attached or named in this conversation;
-- `resumes/` in the working directory (gitignored — this is where a resume
-  lives when working from the repo);
-- ask, if neither exists. Accept `.pdf`, `.docx`, `.txt`, `.md`, `.rtf`.
+```bash
+python3 .claude/skills/ats-check/scripts/ats_validate.py CV.docx \
+    --pdf CV.pdf --design "CV_Design.pdf" --jd jd.txt --json
+```
 
-If the user pasted resume text rather than a file, write it to a temporary
-`.txt` and run against that — the JD-matching half still works, and the
-report should state that file-level parseability could not be checked.
+Give it every file you have. Each argument unlocks a check, and **a check that
+cannot run is reported as `skip`, never as a pass** — so a validation run with
+only the docx is not a green light for the PDF.
 
-### 2. Get the job description, if there is one
+| Argument | What it verifies |
+|---|---|
+| `CV.docx` (required) | the canonical structure: page setup, Calibri throughout, point sizes, real numbering definitions rather than typed bullets, section order and per-section content rules, metadata |
+| `--pdf` | round trip — the PDF's text matches the docx, proving the PDF came from that docx and dropped nothing. Also runs full PDF parseability |
+| `--design` | content parity — every block of the Canva design export has a counterpart in the ATS build |
+| `--jd` | the JD's required terms and hard gates |
 
-A JD is optional. Without one, run the parseability half and report on that
-alone; it is genuinely useful on its own.
+Exit status: `0` everything passed, `1` something failed, `2` could not run.
 
-With one, accept any of: pasted text, a local file, a URL (fetch it), or a
-job ID from a connected job-board tool. Save the JD text to a file and pass
-`--jd`, rather than shell-quoting a long string.
+### Reading the result
 
-### 3. Run the analyser
+The target is **100/100 with zero failures**. Report the score, then the
+failing checks with their `id` and fix. Do not soften a failure into a
+suggestion — this is a gate.
+
+Three failures deserve more than their one-line fix:
+
+- **`parity.design`** names the exact blocks missing from the ATS build. Quote
+  them verbatim; the fix is to restore that text, not to paraphrase it.
+  Ordering differences are ignored by design, because the two-column Canva
+  export always extracts scrambled.
+- **`parity.docx_pdf`** failing means the PDF was not generated from this
+  docx, or something was lost on export. Regenerate before investigating
+  anything else.
+- **`bullets.real`** means bullets were typed as characters instead of applied
+  as Word list formatting. It looks identical on screen and parses completely
+  differently.
+
+If a check fails because the *spec* is wrong rather than the document,
+say so plainly rather than making the CV wrong to satisfy it. The spec lives
+in `references/canonical_spec.json` and is meant to be edited.
+
+### Personal values
+
+`canonical_spec.json` checks the **shape** of the contact line
+(`City, Country | +phone | email`) and the author name, not literal values,
+because this repository is public. To pin exact strings, copy
+`references/spec.local.example.json` to `references/spec.local.json` — it is
+gitignored and picked up automatically.
+
+---
+
+## Mode 2 — Review (any resume)
 
 ```bash
 python3 .claude/skills/ats-check/scripts/ats_check.py RESUME --jd JD.txt --json
 ```
 
-Standard library only — no install step, no network, no API key. Useful flags:
+Answers two questions in order:
 
-| Flag | Purpose |
-|---|---|
-| `--json` | full structured output; prefer this when you are going to reason over it |
-| (no flag) | rendered Markdown, good for showing the user directly |
-| `--text-only` | just the extracted text, as a layout-aware read |
-| `--text-only --stream-order` | the same page in raw content-stream order |
-| `--jd-text "..."` | inline JD instead of a file |
+1. **Can the machine read the file at all?** Text layer, fonts with no
+   character map, multi-column layouts, contact details stranded in a header
+   or a `mailto:` annotation, dates, hidden text. Measured, and scored out of 100.
+2. **Does the content match the job?** Requirement terms weighted by JD
+   section, alias-aware (`K8s` satisfies `Kubernetes`), hard gates, and skills
+   claimed in a list with nothing behind them.
 
-**Always read the extracted text yourself** (`extracted_text` in the JSON).
-It is what the ATS sees. If it reads as nonsense to you, that is the finding —
-lead with it, whatever the score says.
+Useful flags: `--text-only` prints exactly what an ATS extracts; add
+`--stream-order` for the raw content-stream read. On a two-column resume the
+two differ dramatically, and quoting that difference is the most convincing
+thing you can show.
 
-When the report flags a multi-column layout, diff `extracted_text` against
-`extracted_text_stream_order` and quote the specific line where they diverge.
-A user who sees `Senior Backend Engineer Python` where they wrote two separate
-things understands the problem instantly; "avoid multi-column layouts" does not
-land the same way.
+**The script reports evidence; you report the verdict.** Never repeat the
+coverage percentage as a score of the candidate — it is lexical overlap.
+Check `matched_via` and the evidence snippets before echoing a "missing" term:
+the matcher over-reports gaps and you are the filter. A missed hard gate
+matters more than ten missing keywords.
 
-### 4. Judge the content
+Do not invent a single "ATS score" for job fit. Real systems score
+differently and most compute no percentage at all. Give a qualitative
+verdict — *strong fit / worth applying / stretch / not a fit* — with reasons.
 
-This is the part the script cannot do. Work through:
+---
 
-- **Missing terms that are genuinely absent** vs **present as a synonym the
-  alias list does not know**. Check `matched_via` and the evidence snippets
-  before repeating a "missing" term back to the user. The script over-reports
-  gaps; you are the filter. If you find a good synonym pair the list lacks,
-  add it to `references/aliases.json`.
-- **Hard gates** (`gates` in the JSON). A missed years-of-experience or degree
-  gate matters far more than ten missing keywords. Say so plainly. Note that
-  the years estimate counts every dated range including education, so sanity-
-  check it against the actual roles.
-- **Unsupported claims** (`skills_list_only`). A skill listed in a blob with no
-  bullet behind it is a liability in an interview, not an asset.
-- **Seniority and framing**, which no keyword count captures: does the resume
-  read at the level the job is pitched at?
+## Both modes
 
-### 5. Report
-
-Lead with the single thing most worth fixing. Then:
-
-- **Blockers** — the file will not be read correctly. Fix before applying.
-- **Match assessment** — your judgement, in prose, with reasons.
-- **Specific edits** — concrete rewrites, not advice. Not "add Kubernetes",
-  but the bullet to change and the wording to use, grounded in what the
-  resume already claims.
-
-Never invent experience. If the resume lacks a hard requirement, say the gap
-is real and suggest how to frame adjacent experience honestly — or say that
-the role is a stretch. Suggesting fabrication is the one failure mode that
-actually harms the user.
-
-Keep the report short enough to read on a phone. Prefer three fixes that
-matter to fifteen that do not.
-
-## Scoring
-
-Report parseability out of 100 (the script's number is defensible: it starts
-at 100 and subtracts weighted penalties for concrete defects).
-
-Do **not** invent a single "ATS score" for the match. Real systems score
-differently and their formulas are not public; a made-up percentage reads as
-precision that does not exist. Give a qualitative verdict — *strong fit /
-worth applying / stretch / not a fit* — and justify it.
+- **Read the extracted text yourself** (`extracted_text` in the JSON). If it
+  reads as nonsense to you, that is the finding, whatever the score says.
+- **Never invent experience.** If a requirement is genuinely unmet, say the gap
+  is real and suggest honest framing of adjacent experience, or say the role is
+  a stretch. Keep every figure exactly as the source has it.
+- **Report; do not file.** Hand the result back. Write it to a vault, an
+  archive or anywhere else only when asked, and follow whatever convention that
+  destination already uses — read a neighbouring file first rather than
+  inventing frontmatter or a filename scheme.
+- Treat resume contents as personal data: no copying into the repository, no
+  sending anywhere outside the session.
 
 ## References
 
-- `references/ats-parseability.md` — what actually breaks in real ATS
-  pipelines, and why each check exists. Read before explaining a finding in
-  depth or adding a new check.
-- `references/aliases.json` — synonym table used for matching. Extend it
-  freely; it is data, not logic.
-
-## Notes
-
-- The PDF parser is a from-scratch implementation in `scripts/pdfmini.py`.
-  It handles xref tables and streams, object streams, Flate/LZW/A85/AHx,
-  ToUnicode CMaps, and rebuilds a broken xref by scanning. If a file defeats
-  it, say so rather than reporting a clean bill of health from empty output.
-- Treat resume contents as personal data. Do not write extracted text into
-  files that are committed, and do not send it anywhere outside this session.
+- `references/canonical_spec.json` — the structure Mode 1 enforces. Editable data.
+- `references/ats-parseability.md` — why each parseability check exists.
+- `references/aliases.json` — synonym table for matching. Extend freely.

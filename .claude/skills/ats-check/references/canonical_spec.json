@@ -1,0 +1,88 @@
+{
+  "_comment": [
+    "Canonical ATS docx structure, transcribed from the Job Search project instructions v2.1.",
+    "Values marked null are checked for SHAPE and INTERNAL CONSISTENCY only, not against a",
+    "literal string, because this repository is public and those values are personal data.",
+    "To pin exact values, copy spec.local.example.json to spec.local.json (gitignored) and",
+    "pass --spec-local. The validator merges it over this file."
+  ],
+
+  "page": {
+    "size": "A4",
+    "margins_cm": { "top": 1.5, "bottom": 1.5, "left": 1.7, "right": 1.7 },
+    "margin_tolerance_cm": 0.3,
+    "columns": 1,
+    "target_pages": 2,
+    "max_pages": 2,
+    "_target_words_note": "The instructions say '2 pages, ~1,000 words'. Page count is the binding constraint and is checked separately; this band is advisory and deliberately wide, because a legitimate two-page CV runs anywhere in it.",
+    "target_words": [700, 1250]
+  },
+
+  "forbidden": {
+    "tables": true,
+    "textboxes": true,
+    "images": true,
+    "header_text": true,
+    "footer_text": true,
+    "typed_bullet_glyphs": true,
+    "nested_list_levels": true
+  },
+
+  "font_family": "Calibri",
+
+  "elements": {
+    "name":            { "size_pt": 18, "bold": true },
+    "headline":        { "size_pt": 12, "gray": true },
+    "contact":         { "size_pt": 10 },
+    "linkedin":        { "size_pt": 10, "hyperlink": true },
+    "section_heading": { "size_pt": 12, "bold": true, "all_caps": true, "bottom_border": true },
+    "job_title":       { "size_pt": 11, "bold": true },
+    "company_date":    { "size_pt": 10, "italic": true },
+    "body":            { "size_pt": 10 }
+  },
+
+  "sections": [
+    "PROFESSIONAL SUMMARY",
+    "CORE COMPETENCIES",
+    "KEY ACHIEVEMENTS",
+    "PROFESSIONAL EXPERIENCE",
+    "EARLIER CAREER",
+    "EDUCATION",
+    "TECHNOLOGY",
+    "LANGUAGES"
+  ],
+
+  "section_rules": {
+    "PROFESSIONAL SUMMARY":    { "paragraphs": 3, "bullets": 0 },
+    "CORE COMPETENCIES":       { "pipe_lines": 3 },
+    "KEY ACHIEVEMENTS":        { "bullets": 4, "each_quantified": true },
+    "PROFESSIONAL EXPERIENCE": { "bullets_per_role": [4, 5], "reverse_chronological": true },
+    "EARLIER CAREER":          { "line_pattern": "^(?P<title>.+?),\\s*(?P<company>.+?)\\s*\\((?P<years>\\d{4}(\\s*[-–]\\s*(\\d{4}|Present))?)\\)\\s*$" },
+    "EDUCATION":               { "line_pattern": "^(?P<degree>.+?),\\s*(?P<institution>.+?)\\s*\\((?P<years>\\d{4}(\\s*[-–]\\s*\\d{4})?)\\)\\s*$" },
+    "TECHNOLOGY":              { "pipe_lines": 3 },
+    "LANGUAGES":               { "pipe_lines": 1 }
+  },
+
+  "patterns": {
+    "contact_line": "^\\s*[^|]+\\|\\s*\\+\\d[\\d\\s]{6,}\\|\\s*[^@\\s]+@[^@\\s]+\\.[A-Za-z]{2,}\\s*$",
+    "company_date_line": "^\\s*.+\\s*\\|\\s*(?P<start>[A-Z][a-z]{2,9}\\.?\\s+\\d{4})\\s*[-–]\\s*(?P<end>[A-Z][a-z]{2,9}\\.?\\s+\\d{4}|Present|Current)\\s*$",
+    "linkedin_line": "linkedin\\.com/",
+    "quantified_bullet": "(?:\\d[\\d.,]*\\s*(?:%|pp|k|m|bn|x)\\b|(?:EUR|USD|GBP|€|\\$|£)\\s?\\d|\\d[\\d.,]*\\s*(?:million|billion)|~?\\d{2,})"
+  },
+
+  "metadata": {
+    "author": null,
+    "title_pattern": "^.+\\s+-\\s+.+\\s+-\\s+CV$"
+  },
+
+  "expected": {
+    "contact_line": null,
+    "name": null,
+    "languages_line": null
+  },
+
+  "parity": {
+    "docx_pdf_min_similarity": 0.98,
+    "design_min_coverage": 0.98
+  }
+}
