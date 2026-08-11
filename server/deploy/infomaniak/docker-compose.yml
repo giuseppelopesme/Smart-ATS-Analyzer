@@ -22,6 +22,12 @@ services:
     env_file:
       - /etc/ats-mcp/ats-mcp.env
     environment:
+      # NOTE: the passphrase hash deliberately does NOT come through env_file.
+      # Compose interpolates "$" in env_file values, and a scrypt hash is
+      # scrypt$salt$digest -- Compose eats everything from the second "$", so
+      # the container receives a truncated hash and every login fails with
+      # "incorrect passphrase". It is mounted as a file instead.
+      ATS_OAUTH_PASSWORD_HASH_FILE: /run/secrets/ats-password-hash
       MCP_TRANSPORT: http
       MCP_HOST: 0.0.0.0          # inside the container; the publish is loopback
       MCP_PORT: "8080"
@@ -32,6 +38,7 @@ services:
     # signing in again, so it is deliberately not in the restic set.
     volumes:
       - ats-mcp-state:/var/lib/ats-mcp
+      - /etc/ats-mcp/password.hash:/run/secrets/ats-password-hash:ro
 
     # The process writes nothing outside the state volume and /tmp.
     read_only: true

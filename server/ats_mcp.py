@@ -50,9 +50,51 @@ def _build_auth() -> tuple:
     configured, in which case the secret-path deployment applies.
     """
     public_url = os.environ.get("MCP_PUBLIC_URL", "").rstrip("/")
-    password_hash = os.environ.get("ATS_OAUTH_PASSWORD_HASH", "").strip()
-    if not public_url or not password_hash:
+
+    # A file is the primary source. An env var carrying the hash has to survive
+    # every layer between here and the shell that set it, and Docker Compose
+    # interpolates "$" inside env_file values -- which silently truncates a
+    # scrypt hash at its own separator and makes every login fail.
+    password_hash = ""
+    hash_file = os.environ.get("ATS_OAUTH_PASSWORD_HASH_FILE", "").strip()
+    if hash_file:
+        try:
+            with open(hash_file, "r", encoding="utf-8") as fh:
+                password_hash = fh.read().strip()
+        except OSError as exc:
+            print(f"error: cannot read ATS_OAUTH_PASSWORD_HASH_FILE ({hash_file}): "
+                  f"{exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+    if not password_hash:
+        password_hash = os.environ.get("ATS_OAUTH_PASSWORD_HASH", "").strip()
+
+    if not public_url and not password_hash:
         return None, None
+
+    # Half-configured is the dangerous state: it would start unauthenticated.
+    if public_url and not password_hash:
+        print("error: MCP_PUBLIC_URL is set but no passphrase hash was found.\n"
+              "       Set ATS_OAUTH_PASSWORD_HASH_FILE (preferred) or\n"
+              "       ATS_OAUTH_PASSWORD_HASH. Refusing to start unauthenticated\n"
+              "       on a public URL.", file=sys.stderr)
+        raise SystemExit(2)
+    if password_hash and not public_url:
+        print("error: a passphrase hash is set but MCP_PUBLIC_URL is not.\n"
+              "       OAuth needs the exact external origin as its issuer.",
+              file=sys.stderr)
+        raise SystemExit(2)
+
+    if not oauth.is_valid_hash(password_hash):
+        shown = password_hash[:24] + ("..." if len(password_hash) > 24 else "")
+        print(f"error: the passphrase hash is malformed: '{shown}'\n"
+              "       Expected three '$'-separated parts: scrypt$<salt>$<digest>.\n"
+              "       If it looks truncated, this is the Docker Compose env_file\n"
+              "       trap: Compose interpolates '$' and eats everything from the\n"
+              "       second one onwards. Put the hash in a FILE and point\n"
+              "       ATS_OAUTH_PASSWORD_HASH_FILE at it instead.\n"
+              "       Re-running deploy-ats-mcp.sh migrates this automatically.",
+              file=sys.stderr)
+        raise SystemExit(2)
 
     provider = oauth.AtsAuthProvider(
         base_url=public_url,

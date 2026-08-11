@@ -97,6 +97,30 @@ those two variables and access control becomes an unguessable `MCP_PATH`. The
 server refuses to start on a guessable path in that mode, since the URL is then
 the only credential. Prefer OAuth.
 
+### 1b. Never put the passphrase hash in a Compose `env_file`
+
+Docker Compose interpolates `$` inside `env_file` values. A scrypt hash is
+`scrypt$salt$digest`, so Compose reads `$digest` as an undefined variable and
+substitutes nothing:
+
+```
+in the file:   scrypt$9SZVQR7FnguF2U5Dw7Yz6w$Lhqv1abcDEF
+in container:  scrypt$9SZVQR7FnguF2U5Dw7Yz6w
+```
+
+The container then rejects every passphrase, including the right one, and the
+error you see is "incorrect passphrase" — which blames you rather than the
+configuration. This cost a debugging session.
+
+The hash therefore lives in `/etc/ats-mcp/password.hash`, mounted read-only at
+`/run/secrets/ats-password-hash`, with `ATS_OAUTH_PASSWORD_HASH_FILE` pointing
+at it. A file also keeps the hash out of `docker inspect` and `/proc/*/environ`.
+
+The server now **validates the hash at start-up** and refuses to boot on a
+malformed one, naming this trap in the error. Two other half-configured states
+also abort rather than silently running unauthenticated: a public URL with no
+hash, and a hash with no public URL.
+
 ### 2. The VPS cannot read iCloud, and an iCloud share link is not a file
 
 There is no official iCloud Drive API. `rclone`'s backend needs your real Apple
@@ -408,7 +432,8 @@ machine. The VPS only buys you reachability from the phone.
 | `MCP_PORT` | `8080` | bind port |
 | `MCP_UPLOAD_TTL` | `1800` | seconds a staged upload lives. `0` disables the upload page entirely |
 | `MCP_PUBLIC_URL` | — | external HTTPS origin; enables OAuth when set with the hash |
-| `ATS_OAUTH_PASSWORD_HASH` | — | scrypt hash from `oauth.py --hash-password` |
+| `ATS_OAUTH_PASSWORD_HASH_FILE` | — | **preferred** — path to a file holding the scrypt hash |
+| `ATS_OAUTH_PASSWORD_HASH` | — | the hash inline. Safe for systemd; **not** for Compose `env_file` (see below) |
 | `ATS_OAUTH_STATE` | `/var/lib/ats-mcp/oauth.json` | 0600 file holding registered clients and refresh tokens |
 
 Limits: 12 MB per document, 60,000 characters of job description, 20 s fetch

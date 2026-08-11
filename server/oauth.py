@@ -49,7 +49,8 @@ from mcp.server.auth.provider import (
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
-__all__ = ["AtsAuthProvider", "hash_password", "verify_password", "PendingLogin"]
+__all__ = ["AtsAuthProvider", "hash_password", "verify_password", "is_valid_hash",
+           "PendingLogin"]
 
 AUTH_CODE_TTL = 300           # 5 minutes, per OAuth 2.1 guidance
 ACCESS_TOKEN_TTL = 3600       # 1 hour
@@ -78,6 +79,30 @@ def hash_password(password: str) -> str:
                             maxmem=SCRYPT_MAXMEM)
     enc = lambda b: base64.urlsafe_b64encode(b).decode().rstrip("=")  # noqa: E731
     return f"scrypt${enc(salt)}${enc(digest)}"
+
+
+def is_valid_hash(encoded: str) -> bool:
+    """Is this a well-formed scrypt hash?
+
+    Worth checking separately at start-up. A truncated or corrupted hash makes
+    verify_password return False for every input, which presents as "your
+    passphrase is wrong" -- a symptom that sends you looking in exactly the
+    wrong place. Docker Compose interpolating the ``$`` separators in an
+    env_file is the way this actually happens.
+    """
+    parts = (encoded or "").split("$")
+    if len(parts) != 3 or parts[0] != "scrypt":
+        return False
+    if not parts[1] or not parts[2]:
+        return False
+
+    def dec(text: str) -> bytes:
+        return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+    try:
+        return len(dec(parts[1])) >= 8 and len(dec(parts[2])) >= 16
+    except (ValueError, TypeError):
+        return False
 
 
 def verify_password(password: str, encoded: str) -> bool:

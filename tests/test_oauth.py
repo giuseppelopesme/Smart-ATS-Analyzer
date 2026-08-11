@@ -97,6 +97,33 @@ def test_passwords() -> None:
               not oauth.verify_password("x", bad))
 
 
+def test_hash_validation() -> None:
+    section("OAuth: hash validation")
+    good = oauth.hash_password(PASSWORD)
+    check("a real hash validates", oauth.is_valid_hash(good))
+
+    # The exact corruption Docker Compose produces: it interpolates "$" inside
+    # env_file values, so everything from the second separator is eaten. The
+    # result still looks plausible and made every login fail with "incorrect
+    # passphrase", which points the blame at the user rather than the config.
+    truncated = good.rsplit("$", 1)[0]
+    check("a Compose-truncated hash is rejected", not oauth.is_valid_hash(truncated),
+          truncated[:28])
+    check("verify_password also fails closed on it",
+          not oauth.verify_password(PASSWORD, truncated))
+
+    for bad, why in [
+        ("", "empty"),
+        ("scrypt", "no separators"),
+        ("scrypt$onlysalt", "two parts"),
+        ("bcrypt$aaaaaaaaaaaa$bbbbbbbbbbbbbbbbbbbbbbbb", "wrong scheme"),
+        ("scrypt$$", "empty parts"),
+        ("scrypt$!!!$!!!", "not base64"),
+        ("scrypt$aa$bb", "salt and digest too short"),
+    ]:
+        check(f"rejected: {why}", not oauth.is_valid_hash(bad), repr(bad[:30]))
+
+
 def test_authorization_flow(tmp: str) -> None:
     section("OAuth: authorization code flow")
     p = new_provider(tmp)
@@ -276,7 +303,7 @@ def test_persistence(tmp: str) -> None:
 def main() -> int:
     print("ats-mcp OAuth test suite")
     with tempfile.TemporaryDirectory() as tmp:
-        for fn in (test_passwords,):
+        for fn in (test_passwords, test_hash_validation):
             fn()
         for fn in (test_authorization_flow, test_refresh_and_revoke,
                    test_expiry_and_lockout, test_persistence):
