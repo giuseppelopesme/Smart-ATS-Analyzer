@@ -22,9 +22,37 @@ This runs **before a tailored CV is archived or submitted**. It is the
 "bulletproof check" step: nothing gets archived until it passes.
 
 ```bash
-python3 .claude/skills/ats-check/scripts/ats_validate.py CV.docx \
-    --pdf CV.pdf --jd jd.txt --json
+# an archive folder — resolves the deliverables from its name
+python3 .claude/skills/ats-check/scripts/ats_validate.py "…/YYYYMMDD_Owner_Title" --jd jd.txt --json
+
+# the newest folder in the local Resume archive
+python3 .claude/skills/ats-check/scripts/ats_validate.py --latest --jd jd.txt
+
+# or the files directly
+python3 .claude/skills/ats-check/scripts/ats_validate.py CV.docx --pdf CV.pdf --jd jd.txt
 ```
+
+### Working from the local Resume archive
+
+The archive keeps one folder per tailored CV, three files inside, all named
+after the folder:
+
+```
+YYYYMMDD_Giuseppe LOPES_[Title]/
+  YYYYMMDD_Giuseppe LOPES_[Title].docx          ← ATS docx      (validated)
+  YYYYMMDD_Giuseppe LOPES_[Title].pdf           ← ATS PDF       (validated)
+  YYYYMMDD_Giuseppe LOPES_[Title]_Design.pdf    ← Canva export  (presence only)
+```
+
+Pass the **folder** and the two ATS files are found automatically; the design
+PDF is checked for presence and never validated as the ATS PDF. Three extra
+checks come with it: `archive.folder_name`, `archive.files`,
+`archive.extra_files`.
+
+The archive root is `archive.root` in the spec; override with `--archive-root`.
+**It lives on the Mac.** In a sandbox — the phone, claude.ai, a cloud session —
+that path does not exist, and `--latest` exits 2 saying so rather than
+pretending. There, pass the files directly or have them attached.
 
 **Scope is the two ATS deliverables only** — the rebuilt single-column `.docx`
 and the PDF generated from it. The Canva design export has its own Design QA
@@ -37,9 +65,10 @@ green light for the PDF.
 
 | Argument | What it verifies |
 |---|---|
-| `CV.docx` (required) | the canonical structure: page setup, single column, Calibri throughout, point sizes, real numbering definitions rather than typed bullets, section order and per-section content rules, metadata |
+| a `.docx`, or an archive folder | the canonical structure: page setup, single column, Calibri throughout, point sizes, real numbering definitions rather than typed bullets, section order and per-section content rules, metadata |
 | `--pdf` | round trip — the PDF's text matches the docx block for block, proving it was generated from that docx and dropped nothing; that it is genuinely single column; and full PDF parseability |
 | `--jd` | the JD's required terms and hard gates |
+| `--latest` | validate the newest dated folder in the archive |
 
 Exit status: `0` everything passed, `1` something failed, `2` could not run.
 

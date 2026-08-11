@@ -81,6 +81,12 @@
     "languages_line": null
   },
 
+  "archive": {
+    "_comment": "Local Resume archive. One folder per tailored CV, three files inside, all named after the folder: <name>.docx (ATS), <name>.pdf (ATS, submitted), <name>_Design.pdf (Canva export). Override with --archive-root or spec.local.json.",
+    "root": "/Users/giuseppelopes/Documents/001_Archive/06_RESUME/01_Resume",
+    "folder_pattern": "^(\\d{8})_(.+?)_(.+)$"
+  },
+
   "parity": {
     "_comment": "Scope is the ATS docx and the PDF generated from it. The Canva design export has its own design QA gate and is not compared here.",
     "docx_pdf_min_similarity": 0.98

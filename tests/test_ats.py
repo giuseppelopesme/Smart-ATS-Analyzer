@@ -493,6 +493,80 @@ def test_validator(tmp: str) -> None:
     except DocxError:
         check("inspect_docx raises on non-docx", True)
 
+    test_archive(tmp, script)
+
+
+def test_archive(tmp: str, script: str) -> None:
+    section("Local Resume archive")
+    import subprocess
+
+    import ats_validate as AV
+    import docx_fixtures as DF
+
+    root = os.path.join(tmp, "archive")
+    name = "20260811_Giuseppe LOPES_Campari Global AI Director"
+    folder = os.path.join(root, name)
+    os.makedirs(folder, exist_ok=True)
+    DF.build_docx(os.path.join(folder, f"{name}.docx"))
+    with open(os.path.join(folder, f"{name}.pdf"), "wb") as fh:
+        fh.write(fixtures.multi_page_text_pdf(DF.plain_text()))
+    with open(os.path.join(folder, f"{name}_Design.pdf"), "wb") as fh:
+        fh.write(fixtures.two_column_pdf())
+
+    info = AV.resolve_archive(folder)
+    check("folder name parses", bool(info["match"]), name)
+    check("all three deliverables resolved", all(info["found"].values()), str(info["found"]))
+    check("no unexpected files", not info["unexpected"], str(info["unexpected"]))
+    ids = {c.id: c.ok for c in AV.archive_checks(info)}
+    check("archive checks pass on a correct folder",
+          ids.get("archive.folder_name") and ids.get("archive.files"), str(ids))
+
+    # A folder is enough: docx and PDF resolve from its name.
+    r = subprocess.run([sys.executable, script, folder, "--json"],
+                       capture_output=True, text=True, timeout=120)
+    check("validating a folder exits 0", r.returncode == 0, r.stderr[:200])
+    import json as _json
+    data = _json.loads(r.stdout)
+    check("folder run picked up the ATS docx",
+          data["docx"]["filename"] == f"{name}.docx", data["docx"]["filename"])
+    check("folder run picked up the ATS PDF automatically",
+          data.get("pdf", {}).get("path", "").endswith(f"{name}.pdf"),
+          str(data.get("pdf", {}).get("path")))
+    check("design PDF is not validated as the ATS PDF",
+          "_Design.pdf" not in data.get("pdf", {}).get("path", ""),
+          str(data.get("pdf", {}).get("path")))
+
+    # A non-conforming folder must be caught on all three counts.
+    bad = os.path.join(root, "CV final v2")
+    os.makedirs(bad, exist_ok=True)
+    DF.build_docx(os.path.join(bad, "CV final v2.docx"))
+    with open(os.path.join(bad, "notes.txt"), "w", encoding="utf-8") as fh:
+        fh.write("scratch")
+    binfo = AV.resolve_archive(bad)
+    bids = {c.id: c.ok for c in AV.archive_checks(binfo)}
+    check("misnamed folder flagged", bids.get("archive.folder_name") is False, str(bids))
+    check("missing deliverables flagged", bids.get("archive.files") is False, str(bids))
+    check("stray file flagged", bids.get("archive.extra_files") is False, str(bids))
+
+    # --latest picks the newest dated folder and ignores undated ones.
+    older = os.path.join(root, "20250101_Giuseppe LOPES_Older Role")
+    os.makedirs(older, exist_ok=True)
+    check("latest folder is the newest dated one",
+          AV.latest_archive_folder(root) == folder, str(AV.latest_archive_folder(root)))
+
+    r = subprocess.run([sys.executable, script, "--latest", "--archive-root", root],
+                       capture_output=True, text=True, timeout=120)
+    check("--latest validates the newest folder",
+          r.returncode == 0 and name in r.stdout, r.stderr[:200])
+
+    r = subprocess.run([sys.executable, script, "--latest", "--archive-root",
+                        os.path.join(tmp, "does-not-exist")],
+                       capture_output=True, text=True, timeout=120)
+    check("--latest exits 2 when the archive is unreachable", r.returncode == 2,
+          str(r.returncode))
+    check("unreachable archive explains what to do",
+          "pass the files directly" in r.stderr, r.stderr[:160])
+
 
 def main() -> int:
     import tempfile

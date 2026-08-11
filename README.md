@@ -12,11 +12,22 @@ scripts run unchanged in a sandbox, on a Mac, or in CI.
 ## Mode 1 — Validate (the gate)
 
 ```bash
-python3 .claude/skills/ats-check/scripts/ats_validate.py CV.docx \
-    --pdf CV.pdf --jd jd.txt
+# an archive folder — the deliverables resolve from its name
+python3 .claude/skills/ats-check/scripts/ats_validate.py "…/20260811_Giuseppe LOPES_Campari Global AI Director"
+
+# the newest folder in the local Resume archive
+python3 .claude/skills/ats-check/scripts/ats_validate.py --latest --jd jd.txt
+
+# or the files directly
+python3 .claude/skills/ats-check/scripts/ats_validate.py CV.docx --pdf CV.pdf --jd jd.txt
 ```
 
-Scope is the two ATS deliverables — the rebuilt single-column `.docx` and the
+Given a folder, the ATS docx and PDF are found by naming convention and the
+design PDF is checked for presence only — never validated as the ATS PDF. The
+archive root is configured in the spec and overridable with `--archive-root`;
+where it is not mounted, `--latest` exits 2 and says so instead of pretending.
+
+Scope of validation is the two ATS deliverables — the rebuilt single-column `.docx` and the
 PDF generated from it. The Canva design export has its own Design QA gate and
 is not inspected here.
 
@@ -26,7 +37,7 @@ is not inspected here.
 **PASS · 100/100** · 42 passed, 0 failed, 0 skipped · 738 words
 ```
 
-42 checks against `references/canonical_spec.json`:
+Up to 45 checks against `references/canonical_spec.json`:
 
 | Group | Checks |
 |---|---|
@@ -39,6 +50,7 @@ is not inspected here.
 | Round trip | every block of the docx has a counterpart in the PDF |
 | ATS PDF | genuinely single column, ≤ 2 pages, no parseability blockers |
 | Keywords | JD required terms and hard gates |
+| Archive | folder named `YYYYMMDD_Owner_Title`, all three files present and named after it, nothing stray |
 
 **A check that cannot run reports `skip`, never `pass`.** Validating with only
 the docx is not a green light for the PDF.
@@ -139,7 +151,7 @@ fails to compile, or anything imports a third-party module.
     spec.local.example.json  template for pinning personal values
     ats-parseability.md      why each parseability check exists
     aliases.json             synonym table
-tests/test_ats.py       92 tests, no sample files on disk
+tests/test_ats.py       107 tests, no sample files on disk
 tools/package_skill.py  build + validate the uploadable zip
 ```
 
@@ -160,7 +172,7 @@ are built on that.
 ## Tests
 
 ```bash
-python3 tests/test_ats.py     # 92 passed, 0 failed
+python3 tests/test_ats.py     # 107 passed, 0 failed
 ```
 
 Every PDF and DOCX is constructed byte by byte in `tests/fixtures.py` and

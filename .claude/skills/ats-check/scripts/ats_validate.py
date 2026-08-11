@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -39,17 +40,99 @@ from readers import UnsupportedFormat, load_any  # noqa: E402
 
 ICON = {"pass": "✅", "fail": "❌", "skip": "⚪"}
 
+# One archived CV is a folder holding three files, all named after the folder:
+#   YYYYMMDD_<Owner>_<Title>/
+#     YYYYMMDD_<Owner>_<Title>.docx          <- ATS docx      (validated)
+#     YYYYMMDD_<Owner>_<Title>.pdf           <- ATS PDF       (validated)
+#     YYYYMMDD_<Owner>_<Title>_Design.pdf    <- Canva export  (presence only)
+FOLDER_RE = re.compile(r"^(?P<date>\d{8})_(?P<owner>[^_]+(?:\s+[^_]+)*)_(?P<title>.+)$")
+
+
+def resolve_archive(folder: str) -> Dict[str, Any]:
+    """Map an archive folder to its three deliverables by naming convention."""
+    folder = os.path.abspath(folder.rstrip(os.sep))
+    name = os.path.basename(folder)
+    expected = {
+        "docx": f"{name}.docx",
+        "pdf": f"{name}.pdf",
+        "design": f"{name}_Design.pdf",
+    }
+    try:
+        present = sorted(p for p in os.listdir(folder) if not p.startswith("."))
+    except OSError as exc:
+        raise FileNotFoundError(f"cannot read archive folder: {exc}") from exc
+
+    paths = {k: os.path.join(folder, v) for k, v in expected.items()}
+    found = {k: os.path.isfile(v) for k, v in paths.items()}
+    unexpected = [p for p in present if p not in expected.values()]
+    return {
+        "folder": folder,
+        "folder_name": name,
+        "match": FOLDER_RE.match(name),
+        "expected": expected,
+        "paths": paths,
+        "found": found,
+        "present": present,
+        "unexpected": unexpected,
+    }
+
+
+def archive_checks(info: Dict[str, Any]) -> List["V.Check"]:
+    checks: List[V.Check] = []
+    name = info["folder_name"]
+    checks.append(V.Check(
+        "archive.folder_name", bool(info["match"]),
+        "Archive folder follows YYYYMMDD_Owner_Title",
+        f"'{name}'" + ("" if info["match"] else " — expected a compact 8-digit date, "
+                                                 "then owner, then title, separated by underscores"),
+        "Rename the folder to 'YYYYMMDD_Giuseppe LOPES_[Resume Title]'.",
+        severity="medium", evidence={"name": name},
+    ))
+
+    missing = [info["expected"][k] for k, ok in info["found"].items() if not ok]
+    checks.append(V.Check(
+        "archive.files", not missing,
+        "Archive holds the ATS docx, the ATS PDF and the design PDF",
+        f"missing: {missing}" if missing else "all three present",
+        "Every archived CV carries all three files, each named after the folder.",
+        severity="high",
+        evidence={"expected": info["expected"], "present": info["present"]},
+    ))
+
+    if info["unexpected"]:
+        checks.append(V.Check(
+            "archive.extra_files", False,
+            "No unexpected files in the archive folder",
+            f"unexpected: {info['unexpected']}",
+            "Files must be named exactly after the folder. A stray or misnamed file "
+            "breaks the mapping from a submitted PDF back to its Canva source.",
+            severity="low", evidence={"unexpected": info["unexpected"]},
+        ))
+    return checks
+
+
+def latest_archive_folder(root: str) -> Optional[str]:
+    """Newest dated folder under the archive root, by folder name."""
+    try:
+        entries = [d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+    except OSError:
+        return None
+    dated = sorted((d for d in entries if FOLDER_RE.match(d)), reverse=True)
+    return os.path.join(root, dated[0]) if dated else None
+
 
 def run(
     docx_path: str,
     pdf_path: Optional[str] = None,
     jd_text: str = "",
     spec_local: Optional[str] = None,
+    extra_checks: Optional[List["V.Check"]] = None,
 ) -> Dict[str, Any]:
     spec = V.load_spec(local=spec_local)
     model = inspect_docx(docx_path)
 
-    checks: List[V.Check] = V.validate_structure(model, spec)
+    checks: List[V.Check] = list(extra_checks or [])
+    checks += V.validate_structure(model, spec)
     docx_text = model.text
     out: Dict[str, Any] = {
         "docx": {
@@ -231,7 +314,11 @@ def render(out: Dict[str, Any]) -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Validate ATS deliverables against the canonical structure.")
-    ap.add_argument("docx", help="the ATS .docx")
+    ap.add_argument("target", nargs="?",
+                    help="the ATS .docx, or an archive folder holding the deliverables")
+    ap.add_argument("--latest", action="store_true",
+                    help="validate the newest dated folder under the archive root")
+    ap.add_argument("--archive-root", help="archive root (defaults to the spec's value)")
     ap.add_argument("--pdf", help="the ATS PDF generated from that docx")
     ap.add_argument("--jd", help="job description file")
     ap.add_argument("--jd-text", default="")
@@ -254,9 +341,45 @@ def main(argv: Optional[List[str]] = None) -> int:
     default_local = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "..", "references", "spec.local.json")
     spec_local = args.spec_local or (default_local if os.path.exists(default_local) else None)
+    spec = V.load_spec(local=spec_local)
+
+    target = args.target
+    if args.latest:
+        root = args.archive_root or spec.get("archive", {}).get("root") or ""
+        root = os.path.expanduser(root)
+        if not root or not os.path.isdir(root):
+            print(f"error: archive root not reachable: {root or '(not configured)'}\n"
+                  f"       Set archive.root in the spec, or pass --archive-root. On a "
+                  f"machine without the archive mounted, pass the files directly.",
+                  file=sys.stderr)
+            return 2
+        target = latest_archive_folder(root)
+        if not target:
+            print(f"error: no dated CV folder found under {root}", file=sys.stderr)
+            return 2
+
+    if not target:
+        ap.error("give a .docx, an archive folder, or --latest")
+
+    docx_path, pdf_path = target, args.pdf
+    extra: List[V.Check] = []
+    if os.path.isdir(target):
+        try:
+            info = resolve_archive(target)
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        extra = archive_checks(info)
+        if not info["found"]["docx"]:
+            print(f"error: no ATS docx in {target}\n"
+                  f"       expected {info['expected']['docx']}", file=sys.stderr)
+            return 2
+        docx_path = info["paths"]["docx"]
+        if pdf_path is None and info["found"]["pdf"]:
+            pdf_path = info["paths"]["pdf"]
 
     try:
-        out = run(args.docx, args.pdf, jd_text, spec_local)
+        out = run(docx_path, pdf_path, jd_text, spec_local, extra)
     except DocxError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
