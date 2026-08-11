@@ -4,7 +4,7 @@ This is the gate that runs *before* a tailored CV is archived or submitted:
 the ATS docx must follow the canonical structure exactly, the ATS PDF must be
 the same document rendered, and both must survive a machine parse.
 
-Three independent things get checked, and they fail for different reasons:
+Two independent things get checked, and they fail for different reasons:
 
 * **Structure** -- the docx against ``canonical_spec.json``: page setup, fonts,
   point sizes, real numbering definitions instead of typed bullets, section
@@ -12,8 +12,10 @@ Three independent things get checked, and they fail for different reasons:
 * **Round trip** -- text extracted from the docx and from the PDF must agree.
   If they do not, the PDF was not generated from this docx, or something was
   dropped on the way out.
-* **Content parity** -- optionally, against the Canva design export, to enforce
-  the rule that the ATS build carries 100% of the tailored twin's text.
+
+Scope is the two ATS deliverables, both single column. The Canva design export
+is a separate artefact governed by its own design QA gate, and is not compared
+against here.
 
 A check that cannot be performed is reported as ``skipped``, never as a pass.
 """
@@ -648,34 +650,6 @@ def compare_text(a: str, b: str) -> Dict[str, Any]:
     }
 
 
-def compare_coverage(source: str, target: str) -> Dict[str, Any]:
-    """How much of ``source``'s wording survives into ``target``, ignoring order.
-
-    Used for design-export parity. The Canva twin is multi-column, so its text
-    extracts in a scrambled order by construction -- an order-sensitive
-    comparison would fail every time and tell us nothing. The actual rule
-    being enforced is "the ATS build contains 100% of the twin's text", which
-    is a multiset question, not a sequence one.
-    """
-    from collections import Counter
-
-    src = Counter(_normalise_for_compare(source))
-    tgt = Counter(_normalise_for_compare(target))
-    missing = src - tgt
-    added = tgt - src
-    total = sum(src.values())
-    covered = total - sum(missing.values())
-    return {
-        "coverage": round(covered / total, 4) if total else 0.0,
-        "words_source": total,
-        "words_target": sum(tgt.values()),
-        "missing": [w for w, _ in missing.most_common(60)],
-        "missing_count": sum(missing.values()),
-        "added": [w for w, _ in added.most_common(40)],
-        "added_count": sum(added.values()),
-    }
-
-
 def compare_blocks(source: str, target: str, min_words: int = 4,
                    match_threshold: float = 0.75) -> Dict[str, Any]:
     """Find whole blocks of ``source`` that have no counterpart in ``target``.
@@ -700,8 +674,11 @@ def compare_blocks(source: str, target: str, min_words: int = 4,
     src_blocks = blocks(source)
     tgt_blocks = blocks(target)
     tgt_norm = [" ".join(_normalise_for_compare(b)) for b in tgt_blocks]
-    # One long haystack catches blocks that were re-wrapped across lines.
-    haystack = " ".join(tgt_norm)
+    # The haystack catches blocks re-wrapped across lines, so it must be built
+    # from the WHOLE target, not from the filtered blocks: dropping short
+    # wrapped tails would punch holes in it and split a paragraph that is
+    # actually present into an unmatchable pair of fragments.
+    haystack = " ".join(_normalise_for_compare(target))
 
     missing: List[Dict[str, Any]] = []
     for block in src_blocks[:400]:

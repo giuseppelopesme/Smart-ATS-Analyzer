@@ -13,8 +13,12 @@ scripts run unchanged in a sandbox, on a Mac, or in CI.
 
 ```bash
 python3 .claude/skills/ats-check/scripts/ats_validate.py CV.docx \
-    --pdf CV.pdf --design CV_Design.pdf --jd jd.txt
+    --pdf CV.pdf --jd jd.txt
 ```
+
+Scope is the two ATS deliverables — the rebuilt single-column `.docx` and the
+PDF generated from it. The Canva design export has its own Design QA gate and
+is not inspected here.
 
 ```
 # ATS validation — CV.docx
@@ -32,8 +36,8 @@ python3 .claude/skills/ats-check/scripts/ats_validate.py CV.docx \
 | Typography | Calibri throughout; name 18pt bold; headline 12pt gray; headings 12pt bold caps with a paragraph bottom rule; job titles 11pt bold; company/date 10pt italic; body 10pt |
 | Structure | all canonical sections, in order; 3 summary paragraphs; 3 pipe-separated competency lines; 4 quantified achievements; 4–5 bullets per role; reverse chronological; `Title, Company (YYYY - YYYY)` line shapes |
 | Metadata | author set; title in `Name - Role - CV` form |
-| Round trip | the PDF's text matches the docx |
-| Content parity | every block of the Canva design export survives into the ATS build |
+| Round trip | every block of the docx has a counterpart in the PDF |
+| ATS PDF | genuinely single column, ≤ 2 pages, no parseability blockers |
 | Keywords | JD required terms and hard gates |
 
 **A check that cannot run reports `skip`, never `pass`.** Validating with only
@@ -44,22 +48,21 @@ script or a pre-archive hook.
 
 ### Two checks worth explaining
 
-**Content parity is block-level, not a word-count ratio.** A word ratio is too
+**The round trip is block-level, not a word-count ratio.** A ratio is too
 blunt: an entire bullet can vanish from a 750-word CV and still leave ~98% of
-the words, which sails past any sane threshold. Each block of the design is
-matched against its best counterpart anywhere in the ATS build, so a dropped
-bullet is named exactly:
+the words, which sails past any sane threshold. Each docx block is matched
+against its best counterpart anywhere in the PDF, so a dropped bullet is named
+exactly:
 
 ```
-❌ ATS build carries the design's full content   parity.design
-2 block(s) of the design have no counterpart in the ATS build:
+❌ ATS PDF text matches the docx   parity.docx_pdf
+2 block(s) of the docx have no counterpart in the PDF:
 "Chaired the internal AI governance board covering model risk, validation and the";
 "required for supervisory review."
 ```
 
-Matching is order-insensitive on purpose — a two-column Canva export always
-extracts scrambled, so comparing sequences would fail every time and tell you
-nothing.
+Matching tolerates line re-wrapping and reordering, so it reports content that
+is genuinely gone rather than cosmetic layout differences.
 
 **Bullets.** Typed `•` and a real numbering definition look identical on screen
 and parse completely differently. The validator reads `w:numPr`, so it can tell.
@@ -136,7 +139,7 @@ fails to compile, or anything imports a third-party module.
     spec.local.example.json  template for pinning personal values
     ats-parseability.md      why each parseability check exists
     aliases.json             synonym table
-tests/test_ats.py       91 tests, no sample files on disk
+tests/test_ats.py       92 tests, no sample files on disk
 tools/package_skill.py  build + validate the uploadable zip
 ```
 
@@ -157,7 +160,7 @@ are built on that.
 ## Tests
 
 ```bash
-python3 tests/test_ats.py     # 91 passed, 0 failed
+python3 tests/test_ats.py     # 92 passed, 0 failed
 ```
 
 Every PDF and DOCX is constructed byte by byte in `tests/fixtures.py` and

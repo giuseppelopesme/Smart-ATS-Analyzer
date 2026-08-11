@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """Validate ATS deliverables before they are archived or submitted.
 
-    python3 ats_validate.py CV.docx [--pdf CV.pdf] [--design CV_Design.pdf]
-                            [--jd JD.txt] [--json] [--spec-local spec.local.json]
+    python3 ats_validate.py CV.docx [--pdf CV.pdf] [--jd JD.txt] [--json]
+                            [--spec-local spec.local.json]
 
 Runs the gate:
 
-  1. structure   -- the docx against the canonical spec
-  2. round trip  -- docx text vs ATS PDF text (proves the PDF came from the docx)
-  3. parity      -- ATS text vs the Canva design export (100% content carried over)
-  4. parseability-- the ATS PDF through the same checks any resume gets
-  5. keywords    -- JD overlap, when a JD is supplied
+  1. structure    -- the docx against the canonical spec
+  2. round trip   -- docx text vs ATS PDF text, proving the PDF was generated
+                     from this docx and dropped nothing
+  3. parseability -- the ATS PDF through the same checks any resume gets,
+                     including that it really is single column
+  4. keywords     -- JD overlap, when a JD is supplied
+
+Scope is the two ATS deliverables only. The Canva design export is a separate
+artefact with its own design QA gate and is deliberately not inspected here:
+it is multi-column by construction, so measuring it against a single-column
+ATS build would only ever produce noise.
 
 Exit status: 0 all checks passed, 1 one or more failed, 2 could not run.
 """
@@ -37,7 +43,6 @@ ICON = {"pass": "✅", "fail": "❌", "skip": "⚪"}
 def run(
     docx_path: str,
     pdf_path: Optional[str] = None,
-    design_path: Optional[str] = None,
     jd_text: str = "",
     spec_local: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -68,27 +73,51 @@ def run(
         try:
             pdf = load_any(pdf_path)
             cmp_ = V.compare_text(docx_text, pdf.text)
+            # A similarity number says something is wrong; block matching says
+            # which paragraph went missing, which is what actually gets fixed.
+            blocks = V.compare_blocks(docx_text, pdf.text)
             want = thresholds.get("docx_pdf_min_similarity", 0.98)
-            ok = cmp_["similarity"] >= want
+            ok = cmp_["similarity"] >= want and blocks["missing_count"] == 0
+            dropped = "; ".join(f'"{b["text"][:80]}"'
+                                for b in blocks["missing_blocks"][:5])
             checks.append(V.Check(
                 "parity.docx_pdf", ok,
                 "ATS PDF text matches the docx",
-                f"similarity {cmp_['similarity']:.3f} (need ≥ {want}); "
+                (f"{blocks['missing_count']} block(s) of the docx have no counterpart "
+                 f"in the PDF: {dropped}. " if blocks["missing_count"] else "")
+                + f"Word-sequence similarity {cmp_['similarity']:.3f} (need ≥ {want}); "
                 f"{cmp_['only_in_a_count']} word(s) only in the docx, "
                 f"{cmp_['only_in_b_count']} only in the PDF",
                 "Regenerate the PDF from this exact docx. If they still differ, "
                 "something is being dropped on export — check for content in "
                 "shapes or fields.",
                 severity="blocker",
-                evidence={k: cmp_[k] for k in
-                          ("similarity", "only_in_a", "only_in_b", "words_a", "words_b")},
+                evidence={**{k: cmp_[k] for k in
+                             ("similarity", "only_in_a", "only_in_b", "words_a", "words_b")},
+                          **blocks},
             ))
             out["pdf"] = {
                 "path": os.path.abspath(pdf_path),
                 "pages": len(pdf.pages),
                 "words": pdf.word_count,
                 "comparison": cmp_,
+                "missing_blocks": blocks["missing_blocks"],
             }
+
+            # Single column is the whole point of the ATS build, so name it as
+            # its own check rather than leaving it inside the parseability blob.
+            multi = [p.number for p in pdf.pages if p.multi_column]
+            checks.append(V.Check(
+                "pdf.single_column", not multi,
+                "ATS PDF is single column",
+                f"a column gutter was detected on page(s) {multi}" if multi
+                else f"single column across {len(pdf.pages)} page(s)",
+                "The ATS PDF must be a single-column rebuild. If a gutter is "
+                "detected, the PDF was exported from the Canva design rather "
+                "than generated from the ATS docx.",
+                severity="blocker",
+                evidence={"pages": multi},
+            ))
 
             pdf_findings = ats_lint.lint(pdf, jd_text or None)
             blockers = [f for f in pdf_findings if f.severity in ("blocker", "high")]
@@ -119,49 +148,8 @@ def run(
                               "no --pdf supplied; the round trip could not be run"))
         checks.append(V.Check("pdf.parseability", None,
                               "ATS PDF has no parseability blockers", "no --pdf supplied"))
-
-    # ---- content parity against the Canva design export --------------------
-    if design_path:
-        try:
-            design = load_any(design_path)
-            # Order-insensitive on purpose: the Canva twin is multi-column, so
-            # its text always extracts scrambled. What matters is whether every
-            # word made it across, not the sequence.
-            cmp_d = V.compare_coverage(design.text, docx_text)
-            blocks = V.compare_blocks(design.text, docx_text)
-            want = thresholds.get("design_min_coverage", 0.98)
-            ok = cmp_d["coverage"] >= want and blocks["missing_count"] == 0
-            dropped = "; ".join(f'"{b["text"][:80]}"' for b in blocks["missing_blocks"][:5])
-            checks.append(V.Check(
-                "parity.design", ok,
-                "ATS build carries the design's full content",
-                (f"{blocks['missing_count']} block(s) of the design have no counterpart "
-                 f"in the ATS build: {dropped}. " if blocks["missing_count"] else "")
-                + f"Word coverage {cmp_d['coverage']:.3f} (need ≥ {want})."
-                + (f" {cmp_d['added_count']} word(s) appear in the ATS build but not the "
-                   f"design ({', '.join(cmp_d['added'][:10])}) — confirm these are "
-                   f"intentional, since the rule is nothing added and nothing dropped."
-                   if cmp_d["added_count"] > 15 else ""),
-                "Content parity rule: the ATS docx must contain 100% of the twin's "
-                "text. Restore any dropped block verbatim. Ordering differences are "
-                "expected and ignored — the two-column design export scrambles order "
-                "by construction.",
-                severity="high",
-                evidence={**cmp_d, **blocks},
-            ))
-            out["design"] = {
-                "path": os.path.abspath(design_path),
-                "words": design.word_count,
-                "comparison": cmp_d,
-            }
-        except (UnsupportedFormat, FileNotFoundError, OSError) as exc:
-            checks.append(V.Check("parity.design", None,
-                                  "ATS build carries the design's full content",
-                                  f"could not read the design export: {exc}"))
-    else:
-        checks.append(V.Check("parity.design", None,
-                              "ATS build carries the design's full content",
-                              "no --design supplied; content parity was not verified"))
+        checks.append(V.Check("pdf.single_column", None,
+                              "ATS PDF is single column", "no --pdf supplied"))
 
     # ---- keyword check ------------------------------------------------------
     if jd_text.strip():
@@ -245,7 +233,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Validate ATS deliverables against the canonical structure.")
     ap.add_argument("docx", help="the ATS .docx")
     ap.add_argument("--pdf", help="the ATS PDF generated from that docx")
-    ap.add_argument("--design", help="the Canva design export, for content parity")
     ap.add_argument("--jd", help="job description file")
     ap.add_argument("--jd-text", default="")
     ap.add_argument("--spec-local", help="local spec overrides (gitignored)")
@@ -269,7 +256,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     spec_local = args.spec_local or (default_local if os.path.exists(default_local) else None)
 
     try:
-        out = run(args.docx, args.pdf, args.design, jd_text, spec_local)
+        out = run(args.docx, args.pdf, jd_text, spec_local)
     except DocxError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

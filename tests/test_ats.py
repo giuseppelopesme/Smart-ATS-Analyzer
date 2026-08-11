@@ -421,35 +421,44 @@ def test_validator(tmp: str) -> None:
         check("round trip detects a mismatched PDF", cmp_bad["similarity"] < 0.5,
               str(cmp_bad["similarity"]))
 
-    # ---- content parity ---------------------------------------------------
+    # A PDF that dropped a bullet must be named, not just scored.
     orig = copy.deepcopy(DF.ROLES)
     try:
         DF.ROLES[1] = (DF.ROLES[1][0], DF.ROLES[1][1], DF.ROLES[1][2][:-1])
-        short = DF.build_docx(os.path.join(tmp, "short.docx"))
+        short_text = DF.plain_text()
     finally:
         DF.ROLES[:] = orig
-    design_full = DF.plain_text()
+    full_text = DF.plain_text()
 
-    blocks = V.compare_blocks(design_full, inspect_docx(short).text)
-    check("dropped bullet is detected as a missing block",
+    short_pdf = os.path.join(tmp, "short.pdf")
+    with open(short_pdf, "wb") as fh:
+        fh.write(fixtures.multi_page_text_pdf(short_text))
+
+    blocks = V.compare_blocks(full_text, load_any(short_pdf).text)
+    check("a bullet missing from the PDF is detected as a missing block",
           blocks["missing_count"] >= 1, str(blocks["missing_count"]))
-    check("missing block names the dropped text",
+    check("the missing block names the dropped text",
           any("governance board" in b["text"] for b in blocks["missing_blocks"]),
           str(blocks["missing_blocks"][:2]))
 
-    blocks_ok = V.compare_blocks(design_full, inspect_docx(good).text)
-    check("complete build reports no missing blocks",
+    blocks_ok = V.compare_blocks(full_text, pdf.text)
+    check("a faithful PDF reports no missing blocks",
           blocks_ok["missing_count"] == 0, str(blocks_ok["missing_blocks"][:3]))
 
-    # Reordering alone must not count as dropped content.
-    shuffled = "\n".join(reversed(design_full.split("\n")))
-    blocks_shuf = V.compare_blocks(shuffled, inspect_docx(good).text)
+    # Reordering alone must not be reported as dropped content.
+    shuffled = "\n".join(reversed(full_text.split("\n")))
+    blocks_shuf = V.compare_blocks(shuffled, pdf.text)
     check("reordering is not treated as missing content",
           blocks_shuf["missing_count"] == 0, str(blocks_shuf["missing_count"]))
 
-    cov = V.compare_coverage(design_full, inspect_docx(good).text)
-    check("coverage is 1.0 for an identical build", cov["coverage"] >= 0.999,
-          str(cov["coverage"]))
+    # The ATS PDF must be single column; a Canva-style export must be caught.
+    r_single = load_any(pdf_path)
+    check("ATS PDF is detected as single column",
+          not any(p.multi_column for p in r_single.pages),
+          str([p.number for p in r_single.pages if p.multi_column]))
+    twocol_path = write(tmp, "design_like.pdf", fixtures.two_column_pdf())
+    check("a two-column export is caught as multi column",
+          any(p.multi_column for p in load_any(twocol_path).pages))
 
     # ---- CLI ---------------------------------------------------------------
     import subprocess

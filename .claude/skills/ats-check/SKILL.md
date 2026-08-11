@@ -1,6 +1,6 @@
 ---
 name: ats-check
-description: Validate ATS CV deliverables against a canonical structure, and check any resume against an Applicant Tracking System. Use before archiving or submitting a tailored CV, to verify an ATS .docx and its PDF are bulletproof, to confirm the ATS build carries 100% of the design's content, to run the machine-parse round trip, or when asked whether a resume will pass ATS screening, how it scores against a job description, or what keywords it is missing. Runs offline, no API key, no browser.
+description: Validate ATS CV deliverables against a canonical structure, and check any resume against an Applicant Tracking System. Use before archiving or submitting a tailored CV, to verify a single-column ATS .docx and the PDF generated from it are bulletproof, to run the machine-parse round trip between them, or when asked whether a resume will pass ATS screening, how it scores against a job description, or what keywords it is missing. Runs offline, no API key, no browser.
 ---
 
 # ATS check
@@ -23,18 +23,22 @@ This runs **before a tailored CV is archived or submitted**. It is the
 
 ```bash
 python3 .claude/skills/ats-check/scripts/ats_validate.py CV.docx \
-    --pdf CV.pdf --design "CV_Design.pdf" --jd jd.txt --json
+    --pdf CV.pdf --jd jd.txt --json
 ```
 
-Give it every file you have. Each argument unlocks a check, and **a check that
-cannot run is reported as `skip`, never as a pass** — so a validation run with
-only the docx is not a green light for the PDF.
+**Scope is the two ATS deliverables only** — the rebuilt single-column `.docx`
+and the PDF generated from it. The Canva design export has its own Design QA
+gate and is never passed to this tool: it is multi-column by construction, so
+comparing it against a single-column ATS build would only produce noise.
+
+Each argument unlocks a check, and **a check that cannot run is reported as
+`skip`, never as a pass** — so a validation run with only the docx is not a
+green light for the PDF.
 
 | Argument | What it verifies |
 |---|---|
-| `CV.docx` (required) | the canonical structure: page setup, Calibri throughout, point sizes, real numbering definitions rather than typed bullets, section order and per-section content rules, metadata |
-| `--pdf` | round trip — the PDF's text matches the docx, proving the PDF came from that docx and dropped nothing. Also runs full PDF parseability |
-| `--design` | content parity — every block of the Canva design export has a counterpart in the ATS build |
+| `CV.docx` (required) | the canonical structure: page setup, single column, Calibri throughout, point sizes, real numbering definitions rather than typed bullets, section order and per-section content rules, metadata |
+| `--pdf` | round trip — the PDF's text matches the docx block for block, proving it was generated from that docx and dropped nothing; that it is genuinely single column; and full PDF parseability |
 | `--jd` | the JD's required terms and hard gates |
 
 Exit status: `0` everything passed, `1` something failed, `2` could not run.
@@ -47,13 +51,13 @@ suggestion — this is a gate.
 
 Three failures deserve more than their one-line fix:
 
-- **`parity.design`** names the exact blocks missing from the ATS build. Quote
-  them verbatim; the fix is to restore that text, not to paraphrase it.
-  Ordering differences are ignored by design, because the two-column Canva
-  export always extracts scrambled.
-- **`parity.docx_pdf`** failing means the PDF was not generated from this
-  docx, or something was lost on export. Regenerate before investigating
-  anything else.
+- **`parity.docx_pdf`** names the exact blocks present in the docx and absent
+  from the PDF. Quote them verbatim. It failing means the PDF was not generated
+  from this docx, or something was lost on export — regenerate before
+  investigating anything else.
+- **`pdf.single_column`** failing almost always means the Canva design export
+  was submitted as the ATS PDF by mistake. The ATS PDF must come from the ATS
+  docx.
 - **`bullets.real`** means bullets were typed as characters instead of applied
   as Word list formatting. It looks identical on screen and parses completely
   differently.

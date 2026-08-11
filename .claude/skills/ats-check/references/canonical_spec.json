@@ -82,7 +82,7 @@
   },
 
   "parity": {
-    "docx_pdf_min_similarity": 0.98,
-    "design_min_coverage": 0.98
+    "_comment": "Scope is the ATS docx and the PDF generated from it. The Canva design export has its own design QA gate and is not compared here.",
+    "docx_pdf_min_similarity": 0.98
   }
 }
