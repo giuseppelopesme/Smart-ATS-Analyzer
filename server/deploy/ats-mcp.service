@@ -1,0 +1,43 @@
+# /etc/systemd/system/ats-mcp.service
+[Unit]
+Description=ATS CV validator MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atsmcp
+Group=atsmcp
+WorkingDirectory=/opt/ats-mcp
+Environment=MCP_TRANSPORT=http
+Environment=MCP_HOST=127.0.0.1
+Environment=MCP_PORT=8080
+# Generate once with: python3 -c "import secrets;print('/mcp/'+secrets.token_urlsafe(24))"
+# This secret path is the access control -- see README.md.
+EnvironmentFile=/etc/ats-mcp.env
+ExecStart=/opt/ats-mcp/.venv/bin/python /opt/ats-mcp/server/ats_mcp.py
+Restart=on-failure
+RestartSec=5
+
+# The service handles other people's CVs. Give it as little as possible.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# Nothing is written to disk except temp files, which PrivateTmp isolates.
+ReadWritePaths=
+MemoryMax=1G
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

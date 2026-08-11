@@ -1,0 +1,39 @@
+# /etc/caddy/Caddyfile
+# Caddy obtains and renews TLS certificates automatically.
+ats.example.com {
+    encode gzip
+
+    # Only the secret MCP path is routed. Everything else 404s, so the
+    # endpoint is not discoverable by probing the domain.
+    handle /mcp/* {
+        reverse_proxy 127.0.0.1:8080 {
+            # Streamable HTTP can hold a response open; do not cut it short.
+            flush_interval -1
+            transport http {
+                read_timeout 300s
+                write_timeout 300s
+            }
+        }
+    }
+
+    handle {
+        respond "Not found" 404
+    }
+
+    # Never log the request path: it contains the secret.
+    log {
+        output file /var/log/caddy/ats-mcp.log
+        format filter {
+            request>uri query {
+                replace REDACTED
+            }
+        }
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        -Server
+    }
+}
